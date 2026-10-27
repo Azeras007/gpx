@@ -1,4 +1,4 @@
-import { eleAt, type LatLng, type ProfilePoint } from "./geo";
+import { eleAt, haversine, type LatLng, type ProfilePoint } from "./geo";
 import { openMeteoBlockedUntil } from "./weather";
 
 export type RoutingProfile = "trails" | "roads";
@@ -258,4 +258,115 @@ node["amenity"="toilets"](${bb});
     const ele = t.ele ? parseFloat(t.ele) : undefined;
     return { id: e.id, lat: e.lat, lng: e.lon, kind, name: t.name ?? "", ele: ele && isFinite(ele) ? ele : undefined };
   });
+}
+
+// ── Waymarked trails (OpenStreetMap hiking relations) ────────────────────────
+
+export interface Trail {
+  id: number;
+  name: string;
+  ref: string;
+  /** GR, GRP, PR or Trail, from the OSM network / route tags. */
+  kind: "GR" | "GRP" | "PR" | "Trail" | "Rando";
+  /** Distance announced by the route itself, in meters (not always present). */
+  distance: number | null;
+  loop: boolean;
+  description: string;
+  operator: string;
+  /** Bounding box diagonal, in meters: very large ones are multi-day routes. */
+  span: number;
+  center: LatLng;
+}
+
+function parseDistance(v: string | undefined): number | null {
+  if (!v) return null;
+  const m = v.replace(",", ".").match(/([\d.]+)\s*(km|m|mi)?/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!isFinite(n) || n <= 0) return null;
+  const unit = (m[2] ?? "km").toLowerCase();
+  return unit === "m" ? n : unit === "mi" ? n * 1609.34 : n * 1000;
+}
+
+/** Waymarked walking routes whose extent intersects the box. */
+export async function fetchTrails(south: number, west: number, north: number, east: number, signal?: AbortSignal): Promise<Trail[]> {
+  const bb = `${south.toFixed(4)},${west.toFixed(4)},${north.toFixed(4)},${east.toFixed(4)}`;
+  const q = `[out:json][timeout:25];relation["type"="route"]["route"~"^(hiking|foot|running)$"](${bb});out tags bb 150;`;
+  const res = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", body: new URLSearchParams({ data: q }), signal });
+  if (!res.ok) throw new Error(res.status === 429 ? "Serveur de randonnées saturé, réessayez dans une minute" : `Erreur ${res.status}`);
+  const json = (await res.json()) as {
+    elements: { id: number; tags?: Record<string, string>; bounds?: { minlat: number; minlon: number; maxlat: number; maxlon: number } }[];
+  };
+  return json.elements
+    .filter((e) => e.tags && (e.tags.name || e.tags.ref))
+    .map((e) => {
+      const t = e.tags!;
+      const b = e.bounds;
+      const net = t.network ?? "";
+      const kind: Trail["kind"] =
+        t.route === "running" ? "Trail" : net === "iwn" || net === "nwn" ? "GR" : net === "rwn" ? "GRP" : net === "lwn" ? "PR" : "Rando";
+      const span = b ? haversine([b.minlat, b.minlon], [b.maxlat, b.maxlon]) : 0;
+      return {
+        id: e.id,
+        name: t.name ?? t.ref ?? "",
+        ref: t.ref ?? "",
+        kind,
+        distance: parseDistance(t.distance),
+        loop: t.roundtrip === "yes",
+        description: t.description ?? t["description:fr"] ?? "",
+        operator: t.operator ?? "",
+        span,
+        center: b ? [(b.minlat + b.maxlat) / 2, (b.minlon + b.maxlon) / 2] : [0, 0],
+      } satisfies Trail;
+    });
+}
+
+/**
+ * Geometry of one route, stitched into a single line. Relation members come in
+ * route order but each way may be drawn in either direction, and alternatives
+ * or short gaps are common: ways are chained end to end (flipping when
+ * needed) and the longest continuous chain is kept.
+ */
+export async function fetchTrailGeometry(id: number, signal?: AbortSignal): Promise<LatLng[]> {
+  const q = `[out:json][timeout:60];relation(${id});out geom;`;
+  const res = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", body: new URLSearchParams({ data: q }), signal });
+  if (!res.ok) throw new Error(`Erreur ${res.status}`);
+  const json = (await res.json()) as {
+    elements: { members?: { type: string; role: string; geometry?: { lat: number; lon: number }[] }[] }[];
+  };
+  const skip = /alternative|excursion|approach|connection|link/;
+  const ways = (json.elements[0]?.members ?? [])
+    .filter((m) => m.type === "way" && m.geometry && m.geometry.length > 1 && !skip.test(m.role))
+    .map((m) => m.geometry!.map((g) => [g.lat, g.lon] as LatLng));
+  if (!ways.length) throw new Error("Tracé introuvable pour cette randonnée");
+  const chains: LatLng[][] = [];
+  let cur: LatLng[] = [];
+  for (const w of ways) {
+    if (!cur.length) {
+      cur = w.slice();
+      continue;
+    }
+    const end = cur[cur.length - 1];
+    const start = cur[0];
+    const options = [
+      { d: haversine(end, w[0]), apply: () => cur.push(...w.slice(1)) },
+      { d: haversine(end, w[w.length - 1]), apply: () => cur.push(...w.slice(0, -1).reverse()) },
+      // The very first way may itself be reversed
+      ...(cur.length === ways[0].length
+        ? [
+            { d: haversine(start, w[0]), apply: () => (cur = [...cur.slice().reverse(), ...w.slice(1)]) },
+            { d: haversine(start, w[w.length - 1]), apply: () => (cur = [...cur.slice().reverse(), ...w.slice(0, -1).reverse()]) },
+          ]
+        : []),
+    ];
+    const best = options.reduce((a, b) => (b.d < a.d ? b : a));
+    if (best.d < 300) best.apply();
+    else {
+      chains.push(cur);
+      cur = w.slice();
+    }
+  }
+  chains.push(cur);
+  const length = (c: LatLng[]) => c.reduce((s, p, i) => (i ? s + haversine(c[i - 1], p) : 0), 0);
+  return chains.reduce((a, b) => (length(b) > length(a) ? b : a));
 }

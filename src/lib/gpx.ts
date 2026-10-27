@@ -3,13 +3,11 @@ import { cumulative, eleAt, POI_TYPES, type Activity, type LatLng, type Poi, typ
 const esc = (s: string) =>
   s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" })[c]!);
 
-export type ExportFormat = "gpx" | "gpx-route" | "kml" | "geojson";
+export type ExportFormat = "gpx" | "gpx-route";
 
 export const EXPORT_FORMATS: Record<ExportFormat, { label: string; ext: string; mime: string; hint: string }> = {
-  gpx: { label: "GPX", ext: "gpx", mime: "application/gpx+xml", hint: "Trace — Garmin, Coros, Suunto, Strava" },
-  "gpx-route": { label: "GPX itinéraire", ext: "gpx", mime: "application/gpx+xml", hint: "Itinéraire (rte) pour GPS de rando" },
-  kml: { label: "KML", ext: "kml", mime: "application/vnd.google-earth.kml+xml", hint: "Google Earth / My Maps" },
-  geojson: { label: "GeoJSON", ext: "geojson", mime: "application/geo+json", hint: "SIG, développeurs" },
+  gpx: { label: "Trace", ext: "gpx", mime: "application/gpx+xml", hint: "Pour les montres : Garmin, Coros, Suunto, Polar, Strava" },
+  "gpx-route": { label: "Itinéraire", ext: "gpx", mime: "application/gpx+xml", hint: "Pour les GPS de randonnée qui suivent un itinéraire (rte)" },
 };
 
 export interface ExportOptions {
@@ -37,8 +35,6 @@ function points(o: ExportOptions) {
 }
 
 export function buildExport(format: ExportFormat, o: ExportOptions): string {
-  if (format === "kml") return buildKml(o);
-  if (format === "geojson") return buildGeoJson(o);
   return buildGpx(o, format === "gpx-route");
 }
 
@@ -75,55 +71,6 @@ function buildGpx(o: ExportOptions, asRoute: boolean): string {
 ${wpts ? wpts + "\n" : ""}${body}
 </gpx>
 `;
-}
-
-function buildKml(o: ExportOptions): string {
-  const coords = points(o)
-    .map((p) => `${p.lng.toFixed(6)},${p.lat.toFixed(6)},${(p.ele ?? 0).toFixed(1)}`)
-    .join(" ");
-  const color = o.activity === "run" ? "ff365aff" : "ff81b910";
-  const marks = o.pois
-    .map(
-      (w) =>
-        `    <Placemark><name>${esc(`${POI_TYPES[w.type].emoji} ${w.name}`)}</name><Point><coordinates>${w.lng.toFixed(6)},${w.lat.toFixed(6)}</coordinates></Point></Placemark>`,
-    )
-    .join("\n");
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-  <Document>
-    <name>${esc(o.name)}</name>
-    <Style id="route"><LineStyle><color>${color}</color><width>4</width></LineStyle></Style>
-    <Placemark>
-      <name>${esc(o.name)}</name>
-      <styleUrl>#route</styleUrl>
-      <LineString><tessellate>1</tessellate><altitudeMode>clampToGround</altitudeMode><coordinates>${coords}</coordinates></LineString>
-    </Placemark>
-${marks}
-  </Document>
-</kml>
-`;
-}
-
-function buildGeoJson(o: ExportOptions): string {
-  const fc = {
-    type: "FeatureCollection",
-    features: [
-      {
-        type: "Feature",
-        properties: { name: o.name, activity: o.activity },
-        geometry: {
-          type: "LineString",
-          coordinates: points(o).map((p) => (p.ele != null ? [p.lng, p.lat, +p.ele.toFixed(1)] : [p.lng, p.lat])),
-        },
-      },
-      ...o.pois.map((w) => ({
-        type: "Feature",
-        properties: { name: w.name, type: w.type },
-        geometry: { type: "Point", coordinates: [w.lng, w.lat] },
-      })),
-    ],
-  };
-  return JSON.stringify(fc, null, 2);
 }
 
 export function downloadFile(filename: string, content: string, mime = "application/gpx+xml") {

@@ -65,6 +65,8 @@ interface Props {
   osmPois: OsmPoi[];
   /** Part of the route already covered by the replay animation. */
   replayTrail: LatLng[] | null;
+  /** A waymarked trail being previewed from the explorer. */
+  preview: LatLng[] | null;
   hover: LatLng | null;
   kmMarks: { pos: LatLng; km: number }[];
   overlaps: LatLng[][];
@@ -97,6 +99,7 @@ export default function MapView(props: Props) {
   const slopeGroup = useRef<L.LayerGroup | null>(null);
   const osmGroup = useRef<L.LayerGroup | null>(null);
   const replayLine = useRef<L.Polyline | null>(null);
+  const previewGroup = useRef<L.LayerGroup | null>(null);
   const hillLayer = useRef<L.TileLayer | null>(null);
   const poiGroup = useRef<L.LayerGroup | null>(null);
   const hoverMarker = useRef<L.CircleMarker | null>(null);
@@ -120,6 +123,7 @@ export default function MapView(props: Props) {
     L.control.scale({ position: "bottomright", imperial: false }).addTo(m);
     m.attributionControl.setPrefix(false);
     legGroup.current = L.layerGroup().addTo(m);
+    previewGroup.current = L.layerGroup().addTo(m);
     slopeGroup.current = L.layerGroup().addTo(m);
     overlapGroup.current = L.layerGroup().addTo(m);
     osmGroup.current = L.layerGroup().addTo(m);
@@ -298,6 +302,20 @@ export default function MapView(props: Props) {
       L.polyline(coords, { color, weight: 6, lineCap: "round", lineJoin: "round", interactive: false }).addTo(g),
     );
   }, [props.slopeLines, props.legs]);
+
+  // Explorer preview
+  useEffect(() => {
+    const g = previewGroup.current!;
+    g.clearLayers();
+    if (!props.preview || props.preview.length < 2) return;
+    L.polyline(props.preview, { color: "#ffffff", weight: 10, opacity: 0.9, lineCap: "round", interactive: false }).addTo(g);
+    L.polyline(props.preview, { color: "#2563eb", weight: 5, dashArray: "10 8", lineCap: "round", interactive: false }).addTo(g);
+    L.circleMarker(props.preview[0], { radius: 7, color: "#fff", weight: 3, fillColor: "#10b981", fillOpacity: 1, interactive: false }).addTo(g);
+    map.current!.fitBounds(L.latLngBounds(props.preview), {
+      paddingTopLeft: window.innerWidth < 860 ? [30, 90] : [440, 90],
+      paddingBottomRight: window.innerWidth < 860 ? [30, 260] : [90, 260],
+    });
+  }, [props.preview]);
 
   // Replay trail
   useEffect(() => {
