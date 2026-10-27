@@ -611,6 +611,55 @@ function lineLength(line: LatLng[]) {
   return d;
 }
 
+// Searches already made are kept a few days: the same area comes back at once
+const TRACE_CACHE = "gpx-studio:community";
+const TRACE_TTL = 3 * 86400000;
+type CachedArea = { box: BBox; at: number; traces: (Omit<CommunityTrace, "line"> & { line: number[] })[] };
+
+function readTraceCache(): CachedArea[] {
+  try {
+    return JSON.parse(localStorage.getItem(TRACE_CACHE) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+/** Results of an earlier search of about the same area. */
+function recall(box: BBox): CommunityTrace[] | null {
+  const size = box[2] - box[0];
+  const hit = readTraceCache().find(
+    (c) =>
+      Date.now() - c.at < TRACE_TTL &&
+      Math.abs(c.box[2] - c.box[0] - size) < size * 0.15 &&
+      Math.abs(c.box[0] + c.box[2] - box[0] - box[2]) / 2 < size * 0.15 &&
+      Math.abs(c.box[1] + c.box[3] - box[1] - box[3]) / 2 < size * 0.2,
+  );
+  if (!hit) return null;
+  return hit.traces.map((t) => {
+    const line: LatLng[] = [];
+    for (let i = 0; i < t.line.length; i += 2) line.push([t.line[i], t.line[i + 1]]);
+    return { ...t, line };
+  });
+}
+
+function store(box: BBox, traces: CommunityTrace[]) {
+  const entry: CachedArea = {
+    box,
+    at: Date.now(),
+    traces: traces.map((t) => ({ ...t, line: t.line.flatMap(([a, b]) => [Math.round(a * 1e5) / 1e5, Math.round(b * 1e5) / 1e5]) })),
+  };
+  // Latest areas first, a few at most: lines are heavy
+  let list = [entry, ...readTraceCache().filter((c) => Date.now() - c.at < TRACE_TTL)].slice(0, 4);
+  while (list.length) {
+    try {
+      localStorage.setItem(TRACE_CACHE, JSON.stringify(list));
+      return;
+    } catch {
+      list = list.slice(0, -1);
+    }
+  }
+}
+
 /**
  * Walks and runs people recorded and shared publicly on OpenStreetMap,
  * around the box. Bike and car tracks are left out from their speed.
@@ -626,11 +675,16 @@ export async function fetchCommunityTraces(
 ): Promise<CommunityTrace[]> {
   const [s, w, n, e] = box;
   const raw: RawTrace[] = [];
-  const maxPages = opts.maxPages ?? 9;
+  const maxPages = opts.maxPages ?? 6;
+  const cached = recall(box);
+  if (cached) return cached;
+  const remember = (traces: CommunityTrace[]) => (store(box, traces), traces);
+  const stop = new AbortController();
   const fetchPage = async (page: number): Promise<string | null> => {
     const ctrl = new AbortController();
     const abort = () => ctrl.abort();
     opts.signal?.addEventListener("abort", abort);
+    stop.signal.addEventListener("abort", abort);
     const timer = setTimeout(abort, 25000);
     try {
       const res = await fetch(`${OSM_API}/trackpoints?bbox=${[w, s, e, n].map((v) => v.toFixed(5)).join(",")}&page=${page}`, {
@@ -651,6 +705,7 @@ export async function fetchCommunityTraces(
     } finally {
       clearTimeout(timer);
       opts.signal?.removeEventListener("abort", abort);
+      stop.signal.removeEventListener("abort", abort);
     }
   };
 
@@ -709,34 +764,36 @@ export async function fetchCommunityTraces(
     }
     return kept;
   };
-  // Pages are asked three at a time, and read in order
-  const PARALLEL = 3;
-  let more = true;
-  for (let first = 0; more && first < maxPages; first += PARALLEL) {
-    const pages = await Promise.all(
-      Array.from({ length: Math.min(PARALLEL, maxPages - first) }, (_, k) => fetchPage(first + k)),
-    );
-    for (const xml of pages) {
-      if (xml == null) {
-        more = false;
-        break;
-      }
-      // Pages cut through recordings: glue a piece to the one it continues
-      for (const t of parseTracePage(xml)) {
-        const last = raw[raw.length - 1];
-        const a = last?.points.filter((q) => !isNaN(q.t)).at(-1);
-        const b = t.points[0];
-        if (last && a && last.traceId === t.traceId && b.t >= a.t && b.t - a.t < 600000 && haversine(a.p, b.p) < 1000) {
-          last.points.push(...t.points);
-        } else raw.push(t);
-      }
-      if ((xml.match(/<trkpt/g)?.length ?? 0) < TRACE_PAGE) {
-        more = false;
-        break;
-      }
+  /** Adds a page to the recordings; false when it was the last one. */
+  const read = (xml: string) => {
+    // Pages cut through recordings: glue a piece to the one it continues
+    for (const t of parseTracePage(xml)) {
+      const last = raw[raw.length - 1];
+      const a = last?.points.filter((q) => !isNaN(q.t)).at(-1);
+      const b = t.points[0];
+      if (last && a && last.traceId === t.traceId && b.t >= a.t && b.t - a.t < 600000 && haversine(a.p, b.p) < 1000) {
+        last.points.push(...t.points);
+      } else raw.push(t);
     }
-    if (more) opts.onTraces?.(build());
-  }
+    return (xml.match(/<trkpt/g)?.length ?? 0) >= TRACE_PAGE;
+  };
 
-  return build();
+  // Each page costs the server 2 to 4 s whatever its size: the first one is
+  // shown on its own, then all the others are asked at once and read in order
+  const first = await fetchPage(0);
+  if (first == null || !read(first)) return remember(build());
+  opts.onTraces?.(build());
+  const rest = Array.from({ length: maxPages - 1 }, (_, k) => fetchPage(k + 1));
+  rest.forEach((r) => r.catch(() => {}));
+  try {
+    for (const r of rest) {
+      const xml = await r;
+      if (xml == null || !read(xml)) break;
+      opts.onTraces?.(build());
+    }
+  } finally {
+    // Pages past the last one are not needed
+    stop.abort();
+  }
+  return remember(build());
 }
