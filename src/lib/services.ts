@@ -315,8 +315,8 @@ export interface Trail {
   id: number;
   name: string;
   ref: string;
-  /** GR, GRP, PR or Trail, from the OSM network / route tags. */
-  kind: "GR" | "GRP" | "PR" | "Trail" | "Rando";
+  /** GR, GRP, PR or Trail, from the OSM network / route tags; Course or Marche for a trace someone shared. */
+  kind: "GR" | "GRP" | "PR" | "Trail" | "Rando" | "Course" | "Marche";
   /** Distance announced by the route itself, in meters (not always present). */
   distance: number | null;
   loop: boolean;
@@ -324,6 +324,10 @@ export interface Trail {
   operator: string;
   /** Multi-day route (national or international network, or longer than 60 km): only its section in the area is used. */
   long: boolean;
+  /** Shared by someone: who and when, shown under the name. */
+  byline?: string;
+  /** Page of the shared trace on openstreetmap.org. */
+  link?: string;
 }
 
 function parseDistance(v: string | undefined): number | null {
@@ -468,4 +472,271 @@ export async function fetchTrailGeometries(ids: number[], clip?: BBox, signal?: 
     if (line && line.length > 1) out.set(el.id, line);
   }
   return out;
+}
+
+// ── Community traces (public GPS tracks uploaded to OpenStreetMap) ───────────
+
+const OSM_API = "https://api.openstreetmap.org/api/0.6";
+/** The API answers 5 000 points per page. */
+const TRACE_PAGE = 5000;
+
+interface TracePoint {
+  p: LatLng;
+  t: number;
+}
+
+interface RawTrace {
+  /** Public trace id, for traces their author made identifiable. */
+  traceId: number | null;
+  author: string | null;
+  title: string;
+  points: TracePoint[];
+}
+
+/** A walk or a run someone recorded and shared, cut to the searched area. */
+export interface CommunityTrace {
+  id: number;
+  name: string;
+  author: string | null;
+  traceId: number | null;
+  /** Start of the outing (ms). */
+  date: number;
+  sport: "run" | "hike";
+  /** Average moving speed, km/h. */
+  speed: number;
+  line: LatLng[];
+  distance: number;
+  loop: boolean;
+  /** The recording goes on outside the area: only its part inside is kept. */
+  partial: boolean;
+}
+
+function parseTracePage(xml: string): RawTrace[] {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const out: RawTrace[] = [];
+  doc.querySelectorAll("trk").forEach((trk) => {
+    const url = trk.querySelector(":scope > url")?.textContent ?? "";
+    const m = url.match(/\/user\/([^/]+)\/traces\/(\d+)/);
+    const points: TracePoint[] = [];
+    trk.querySelectorAll("trkseg").forEach((seg) => {
+      seg.querySelectorAll("trkpt").forEach((pt) => {
+        const t = Date.parse(pt.querySelector("time")?.textContent ?? "");
+        // Private traces come without time, points sorted by position: unusable
+        if (!isFinite(t)) return;
+        points.push({ p: [Number(pt.getAttribute("lat")), Number(pt.getAttribute("lon"))], t });
+      });
+      // A new segment means the track left the area: mark the jump
+      if (points.length) points.push({ p: [NaN, NaN], t: NaN });
+    });
+    if (points.length < 2) return;
+    out.push({
+      traceId: m ? Number(m[2]) : null,
+      author: m ? decodeURIComponent(m[1]) : null,
+      title: cleanTitle(trk.querySelector(":scope > desc")?.textContent ?? "") || cleanTitle(trk.querySelector(":scope > name")?.textContent ?? ""),
+      points,
+    });
+  });
+  return out;
+}
+
+/** Splits a recording into continuous outings: breaks at area exits, long pauses and GPS jumps. */
+function outings(points: TracePoint[]): TracePoint[][] {
+  const parts: TracePoint[][] = [[]];
+  let gapOpen = false;
+  for (const q of points) {
+    const cur = parts[parts.length - 1];
+    if (isNaN(q.t)) {
+      gapOpen = true;
+      continue;
+    }
+    const prev = cur[cur.length - 1];
+    if (prev) {
+      const dt = (q.t - prev.t) / 1000;
+      const d = haversine(prev.p, q.p);
+      // Leaving the area and coming back close by is the same outing
+      // A break (lunch, a summit) where the walker stayed put is the same outing too
+      const tolerated = gapOpen ? d < 250 && dt < 1200 : (dt < 600 && d < 400) || (d < 150 && dt < 7200);
+      if (!tolerated || dt < 0) parts.push([]);
+    }
+    parts[parts.length - 1].push(q);
+    gapOpen = false;
+  }
+  return parts.filter((p) => p.length > 10);
+}
+
+/** Moving speed (km/h) and the speed the outing keeps over its fastest stretches. */
+function paceOf(pts: TracePoint[]) {
+  let dist = 0;
+  let time = 0;
+  const speeds: number[] = [];
+  let a = 0;
+  // Speeds over windows of at least 30 s, to smooth GPS noise
+  for (let i = 1; i < pts.length; i++) {
+    const dt = (pts[i].t - pts[a].t) / 1000;
+    if (dt < 30) continue;
+    let d = 0;
+    for (let k = a + 1; k <= i; k++) d += haversine(pts[k - 1].p, pts[k].p);
+    const v = (d / dt) * 3.6;
+    if (v > 1 && dt < 300) {
+      dist += d;
+      time += dt;
+      speeds.push(v);
+    }
+    a = i;
+  }
+  speeds.sort((x, y) => x - y);
+  return { moving: time ? (dist / time) * 3.6 : 0, fast: speeds[Math.floor(speeds.length * 0.9)] ?? 0 };
+}
+
+const GENERIC_TITLE =
+  /^(strava|garmin|suunto|coros|polar|komoot|wikiloc|track|trace|activity|activit[ée]|untitled|sans titre|run|ride|walk|hike|gpx|export|record|recording|osmand|osmtracker|geotracker|gpslib|script|my ?tracks|tracks?|morning|afternoon|evening|lunch|current)\b/i;
+
+const BY_WHEEL = /v[ée]lo|bike|biking|ride|cycl|vtt|mtb|trott?inette|scooter|roller|skate|voiture|drive|driving|\bcar\b|\bbus\b|train|moto|kayak|canoe|bateau|boat|ski\b/i;
+
+/** Readable name from what the author typed, or none when it is only a file or device name. */
+function cleanTitle(s: string) {
+  const t = s
+    .replace(/\.(gpx|fit|tcx|kml)$/i, "")
+    .replace(/_+/g, " ")
+    .replace(/^(\d[\d\-:.T]*\s*)+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (t.length < 6 || t.length > 70 || GENERIC_TITLE.test(t) || !/[a-zà-ÿ]{3}/i.test(t)) return "";
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+function lineLength(line: LatLng[]) {
+  let d = 0;
+  for (let i = 1; i < line.length; i++) d += haversine(line[i - 1], line[i]);
+  return d;
+}
+
+/**
+ * Walks and runs people recorded and shared publicly on OpenStreetMap,
+ * around the box. Bike and car tracks are left out from their speed.
+ */
+export async function fetchCommunityTraces(
+  box: BBox,
+  opts: {
+    signal?: AbortSignal;
+    maxPages?: number;
+    /** First results while the next pages still load. */
+    onTraces?: (traces: CommunityTrace[]) => void;
+  } = {},
+): Promise<CommunityTrace[]> {
+  const [s, w, n, e] = box;
+  const raw: RawTrace[] = [];
+  const maxPages = opts.maxPages ?? 9;
+  const fetchPage = async (page: number): Promise<string | null> => {
+    const ctrl = new AbortController();
+    const abort = () => ctrl.abort();
+    opts.signal?.addEventListener("abort", abort);
+    const timer = setTimeout(abort, 25000);
+    try {
+      const res = await fetch(`${OSM_API}/trackpoints?bbox=${[w, s, e, n].map((v) => v.toFixed(5)).join(",")}&page=${page}`, {
+        signal: ctrl.signal,
+      });
+      if (!res.ok)
+        throw new Error(
+          res.status === 509 || res.status === 429
+            ? "Le serveur OpenStreetMap est saturé, réessayez dans une minute."
+            : "Traces GPS indisponibles pour le moment.",
+        );
+      return await res.text();
+    } catch (err) {
+      if (opts.signal?.aborted) throw err;
+      // The first page is needed; later ones are a bonus
+      if (page === 0) throw (err as Error).name === "AbortError" ? new Error("Le serveur OpenStreetMap ne répond pas, réessayez plus tard.") : err;
+      return null;
+    } finally {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", abort);
+    }
+  };
+
+  const edge = (p: LatLng) => {
+    const m = 0.0025;
+    return p[0] - s < m || n - p[0] < m || p[1] - w < m * 1.4 || e - p[1] < m * 1.4;
+  };
+
+  // Outings of one recording, cached: only the last recording can still grow
+  const cache = new Map<number, { size: number; out: CommunityTrace[] }>();
+  const outingsOf = (r: RawTrace, index: number): CommunityTrace[] => {
+    const hit = cache.get(index);
+    if (hit && hit.size === r.points.length) return hit.out;
+    const out: CommunityTrace[] = [];
+    outings(r.points).forEach((pts, k) => {
+      const { moving, fast } = paceOf(pts);
+      // Bikes, cars, ski lifts… and GPS left on a table
+      if (fast > 19 || moving > 15 || moving < 1.5) return;
+      // Said to be a ride: only its walking parts are kept
+      if (BY_WHEEL.test(r.title) && moving > 6.5) return;
+      const line: LatLng[] = [];
+      for (const q of pts) if (!line.length || haversine(line[line.length - 1], q.p) > 8) line.push(q.p);
+      const distance = lineLength(line);
+      if (distance < 1500 || line.length < 10) return;
+      out.push({
+        // Stable while pages come in, and negative: never mistaken for a waymarked route
+        id: -(index * 100 + k + 1),
+        name: r.title,
+        author: r.author,
+        traceId: r.traceId,
+        date: pts[0].t,
+        sport: moving >= 7.5 ? "run" : "hike",
+        speed: moving,
+        line,
+        distance,
+        loop: haversine(line[0], line[line.length - 1]) < 300,
+        partial: edge(line[0]) || edge(line[line.length - 1]),
+      });
+    });
+    cache.set(index, { size: r.points.length, out });
+    return out;
+  };
+
+  /** Every outing so far, the same route recorded twice kept once (the latest). */
+  const build = () => {
+    const all = raw.flatMap(outingsOf).sort((a, z) => z.date - a.date);
+    const kept: CommunityTrace[] = [];
+    for (const t of all) {
+      const same = kept.some(
+        (k) =>
+          Math.abs(k.distance - t.distance) < 0.03 * t.distance &&
+          haversine(k.line[0], t.line[0]) < 150 &&
+          haversine(k.line[k.line.length - 1], t.line[t.line.length - 1]) < 150,
+      );
+      if (!same) kept.push(t);
+    }
+    return kept;
+  };
+  // Pages are asked three at a time, and read in order
+  const PARALLEL = 3;
+  let more = true;
+  for (let first = 0; more && first < maxPages; first += PARALLEL) {
+    const pages = await Promise.all(
+      Array.from({ length: Math.min(PARALLEL, maxPages - first) }, (_, k) => fetchPage(first + k)),
+    );
+    for (const xml of pages) {
+      if (xml == null) {
+        more = false;
+        break;
+      }
+      // Pages cut through recordings: glue a piece to the one it continues
+      for (const t of parseTracePage(xml)) {
+        const last = raw[raw.length - 1];
+        const a = last?.points.filter((q) => !isNaN(q.t)).at(-1);
+        const b = t.points[0];
+        if (last && a && last.traceId === t.traceId && b.t >= a.t && b.t - a.t < 600000 && haversine(a.p, b.p) < 1000) {
+          last.points.push(...t.points);
+        } else raw.push(t);
+      }
+      if ((xml.match(/<trkpt/g)?.length ?? 0) < TRACE_PAGE) {
+        more = false;
+        break;
+      }
+    }
+    if (more) opts.onTraces?.(build());
+  }
+
+  return build();
 }
