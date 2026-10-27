@@ -48,7 +48,10 @@ export interface RouteStats {
   loss: number;
   minEle: number | null;
   maxEle: number | null;
-  maxSlope: number;
+  /** Average gradient of the uphill parts, in % (0 when flat or downhill only). */
+  climbGrade: number;
+  /** Steepest sustained section: its gradient (%, up or down) and over how many meters. */
+  steepest: { grade: number; over: number };
 }
 
 const R = 6371008.8;
@@ -117,15 +120,49 @@ export function eleAt(profile: ProfilePoint[], d: number): number | null {
   return a.ele + (b.ele - a.ele) * t;
 }
 
+/**
+ * Elevation averaged over ±`radius` meters. Terrain data is accurate to
+ * roughly 30 m, so raw point-to-point differences are mostly noise: a 6 m
+ * error between two points 20 m apart would read as a 30 % slope.
+ */
+export function smoothProfile(profile: ProfilePoint[], radius = 60): ProfilePoint[] {
+  const pts = profile.filter((p) => p.ele != null);
+  if (pts.length < 3) return pts;
+  let lo = 0;
+  let hi = 0;
+  let sum = 0;
+  return pts.map((p) => {
+    while (hi < pts.length && pts[hi].d <= p.d + radius) sum += pts[hi++].ele!;
+    while (pts[lo].d < p.d - radius) sum -= pts[lo++].ele!;
+    return { ...p, ele: sum / (hi - lo) };
+  });
+}
+
+/** Gradient (%) around distance `d`, measured over `window` meters of a smoothed profile. */
+export function gradeAt(smooth: ProfilePoint[], d: number, window = 150): number {
+  if (smooth.length < 2) return 0;
+  const total = smooth[smooth.length - 1].d;
+  const from = Math.max(0, Math.min(d - window / 2, total - window));
+  const to = Math.min(total, from + window);
+  const a = eleAt(smooth, from);
+  const b = eleAt(smooth, to);
+  if (a == null || b == null || to - from < 1) return 0;
+  return ((b - a) / (to - from)) * 100;
+}
+
+/** A gradient as an angle, for those who think in degrees. */
+export const gradeToDegrees = (grade: number) => (Math.atan(Math.abs(grade) / 100) * 180) / Math.PI;
+
 export function computeStats(distance: number, profile: ProfilePoint[]): RouteStats {
-  const eles = profile.map((p) => p.ele).filter((e): e is number => e != null);
+  const raw = profile.filter((p) => p.ele != null);
+  const smooth = smoothProfile(raw, 40);
+  const eles = smooth.map((p) => p.ele!);
   let gain = 0;
   let loss = 0;
-  let maxSlope = 0;
   if (eles.length > 1) {
-    // Hysteresis filter: only count elevation changes larger than the threshold,
-    // which removes DEM noise that would otherwise inflate D+/D-.
-    const threshold = 4;
+    // Hysteresis: only count changes larger than the threshold, which removes
+    // the remaining terrain-data noise that would otherwise inflate D+/D-.
+    const threshold = 3;
     let ref = eles[0];
     for (const e of eles) {
       const diff = e - ref;
@@ -137,13 +174,33 @@ export function computeStats(distance: number, profile: ProfilePoint[]): RouteSt
         ref = e;
       }
     }
-    for (let i = 1; i < profile.length; i++) {
-      const a = profile[i - 1];
-      const b = profile[i];
-      if (a.ele == null || b.ele == null) continue;
-      const dd = b.d - a.d;
-      if (dd < 15) continue;
-      maxSlope = Math.max(maxSlope, Math.abs((b.ele - a.ele) / dd) * 100);
+  }
+
+  // Gradients are read on 100 m steps of a profile smoothed over ±80 m.
+  const total = raw.length ? raw[raw.length - 1].d : 0;
+  const s60 = smoothProfile(raw, 80);
+  let climbUp = 0;
+  let climbDist = 0;
+  const step = 100;
+  for (let d = 0; d + step <= total; d += step) {
+    const a = eleAt(s60, d);
+    const b = eleAt(s60, d + step);
+    // Below 2 % it is flat ground (and terrain noise), not a climb
+    if (a != null && b != null && b - a > 2) {
+      climbUp += b - a;
+      climbDist += step;
+    }
+  }
+  // Steepest stretch over 500 m (or a quarter of a short route, 200 m minimum)
+  const window = Math.min(500, Math.max(200, total / 4));
+  let steepest = { grade: 0, over: Math.round(window) };
+  if (total >= window) {
+    for (let d = 0; d + window <= total; d += 25) {
+      const a = eleAt(s60, d);
+      const b = eleAt(s60, d + window);
+      if (a == null || b == null) continue;
+      const g = ((b - a) / window) * 100;
+      if (Math.abs(g) > Math.abs(steepest.grade)) steepest = { grade: g, over: Math.round(window) };
     }
   }
   return {
@@ -152,8 +209,19 @@ export function computeStats(distance: number, profile: ProfilePoint[]): RouteSt
     loss,
     minEle: eles.length ? Math.min(...eles) : null,
     maxEle: eles.length ? Math.max(...eles) : null,
-    maxSlope,
+    climbGrade: climbDist ? (climbUp / climbDist) * 100 : 0,
+    steepest,
   };
+}
+
+/** "8 %" with a French decimal comma under 10 %. */
+export function formatGrade(grade: number): string {
+  const a = Math.abs(grade);
+  return `${a < 10 ? a.toFixed(1).replace(".", ",").replace(",0", "") : Math.round(a)} %`;
+}
+
+export function formatDegrees(grade: number): string {
+  return `${gradeToDegrees(grade).toFixed(1).replace(".", ",")}°`;
 }
 
 /** Estimated duration in seconds. */

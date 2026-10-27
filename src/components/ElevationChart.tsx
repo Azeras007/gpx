@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useLayoutEffect } from "react";
 import type { ProfilePoint } from "../lib/geo";
-import { formatDistance, slopeColor, type PoiType } from "../lib/geo";
+import { formatDegrees, formatDistance, formatGrade, gradeAt, slopeColor, smoothProfile, type PoiType } from "../lib/geo";
 import { POI_ICONS } from "./icons";
 
 interface Props {
@@ -37,7 +37,9 @@ export default function ElevationChart({ profile, accent, loading, marks, overla
     return () => ro.disconnect();
   }, []);
 
-  const pts = useMemo(() => profile.filter((p) => p.ele != null) as (ProfilePoint & { ele: number })[], [profile]);
+  // Drawn and read on a profile smoothed over ±60 m: terrain data is only
+  // accurate to ~30 m, raw point-to-point slopes would be mostly noise.
+  const pts = useMemo(() => smoothProfile(profile, 80) as (ProfilePoint & { ele: number })[], [profile]);
 
   const geom = useMemo(() => {
     if (pts.length < 2) return null;
@@ -58,7 +60,7 @@ export default function ElevationChart({ profile, accent, loading, marks, overla
     for (let i = 1; i < pts.length; i++) {
       const a = pts[i - 1];
       const b = pts[i];
-      const c = slopeColor(((b.ele - a.ele) / (b.d - a.d || 1)) * 100);
+      const c = slopeColor(gradeAt(pts, (a.d + b.d) / 2));
       const seg = `${x(b.d).toFixed(1)},${y(b.ele).toFixed(1)}`;
       const last = runs[runs.length - 1];
       if (last && last.color === c) last.d += `L${seg}`;
@@ -98,10 +100,7 @@ export default function ElevationChart({ profile, accent, loading, marks, overla
   };
   const hoverI = localI ?? (cursorD != null && pts.length > 1 ? nearest(cursorD) : null);
   const hp = hoverI != null ? pts[hoverI] : null;
-  const slope =
-    hoverI != null && hoverI > 0
-      ? ((pts[hoverI].ele - pts[hoverI - 1].ele) / (pts[hoverI].d - pts[hoverI - 1].d || 1)) * 100
-      : 0;
+  const slope = hp ? gradeAt(pts, hp.d) : 0;
 
   return (
     <div
@@ -173,8 +172,8 @@ export default function ElevationChart({ profile, accent, loading, marks, overla
           <b>{Math.round(hp.ele)} m</b>
           <span>{formatDistance(hp.d)}</span>
           <span style={{ color: slopeColor(slope) }}>
-            {slope > 0 ? "+" : ""}
-            {slope.toFixed(1).replace(".", ",")} %
+            {slope > 0.05 ? "+" : slope < -0.05 ? "−" : ""}
+            {formatGrade(slope)} · {formatDegrees(slope)}
           </span>
         </div>
       )}

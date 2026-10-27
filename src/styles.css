@@ -380,6 +380,11 @@ svg {
   font-variant-numeric: lining-nums tabular-nums;
   white-space: nowrap;
 }
+.stat-sub {
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: var(--ink-3);
+}
 .stat.up .label svg {
   color: var(--up);
 }
@@ -2460,9 +2465,15 @@ kbd {
     order: -7;
     height: 150px;
   }
-  /* The summary at the top already gives these */
+  /* D+ and D- are already in the summary: only the gradients stay */
   .sheet .stats {
+    grid-template-columns: 1fr 1fr;
+  }
+  .sheet .stats .stat:nth-child(-n + 2) {
     display: none;
+  }
+  .sheet .stats .stat:nth-child(3) {
+    border-left: 0;
   }
   .sheet .tabs + .stats + .block {
     border-top: 0;

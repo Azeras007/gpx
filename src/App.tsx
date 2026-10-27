@@ -68,6 +68,10 @@ import {
   resample,
   sampleEvery,
   simplify,
+  smoothProfile,
+  gradeAt,
+  formatGrade,
+  formatDegrees,
   slopeColor,
   uid,
   type Activity,
@@ -431,11 +435,12 @@ export default function App() {
   // Route drawn in slope colors (needs elevations)
   const slopeLines = useMemo(() => {
     if (!slopeColorsOn || profile.length < 2 || profile.some((p) => p.ele == null)) return null;
+    const smooth = smoothProfile(profile, 80);
     const runs: { color: string; coords: LatLng[] }[] = [];
-    for (let i = 1; i < profile.length; i++) {
-      const a = profile[i - 1];
-      const b = profile[i];
-      const color = slopeColor(((b.ele! - a.ele!) / (b.d - a.d || 1)) * 100);
+    for (let i = 1; i < smooth.length; i++) {
+      const a = smooth[i - 1];
+      const b = smooth[i];
+      const color = slopeColor(gradeAt(smooth, (a.d + b.d) / 2));
       // Real path between the two samples, not a straight shortcut
       const seg: LatLng[] = [[a.lat, a.lng]];
       for (let j = 0; j < track.length; j++) if (cum[j] > a.d && cum[j] < b.d) seg.push(track[j]);
@@ -1157,8 +1162,18 @@ export default function App() {
             <div className="stats">
               <Stat icon={<TrendingUp size={14} />} label="D+" value={`${Math.round(stats.gain)} m`} tone="up" loading={eleLoading} />
               <Stat icon={<TrendingDown size={14} />} label="D-" value={`${Math.round(stats.loss)} m`} tone="down" loading={eleLoading} />
-              <Stat icon={<Mountain size={14} />} label="Alt. max" value={stats.maxEle != null ? `${Math.round(stats.maxEle)} m` : "—"} />
-              <Stat icon={<Gauge size={14} />} label="Pente max" value={`${stats.maxSlope.toFixed(0)} %`} />
+              <Stat
+                icon={<Mountain size={14} />}
+                label="Pente moy."
+                value={formatGrade(stats.climbGrade)}
+                sub={`en montée · ${formatDegrees(stats.climbGrade)}`}
+              />
+              <Stat
+                icon={<Gauge size={14} />}
+                label="Plus raide"
+                value={`${stats.steepest.grade < 0 ? "−" : ""}${formatGrade(stats.steepest.grade)}`}
+                sub={`sur ${formatDistance(stats.steepest.over)} · ${formatDegrees(stats.steepest.grade)}`}
+              />
             </div>
 
             <div className="block">
@@ -1688,13 +1703,14 @@ export default function App() {
   );
 }
 
-function Stat(props: { icon: React.ReactNode; label: string; value: string; tone?: "up" | "down" | "warn"; loading?: boolean }) {
+function Stat(props: { icon: React.ReactNode; label: string; value: string; sub?: string; tone?: "up" | "down" | "warn"; loading?: boolean }) {
   return (
     <div className={`stat ${props.tone ?? ""}`}>
       <span className="label">
         {props.icon} {props.label}
       </span>
       <b className={props.loading ? "shimmer" : ""}>{props.value}</b>
+      {props.sub && <small className="stat-sub">{props.sub}</small>}
     </div>
   );
 }
