@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type L from "leaflet";
-import { Clock, Loader2, LocateFixed, MoveHorizontal, Repeat, Search, TrendingUp } from "lucide-react";
+import { Clock, ExternalLink, Loader2, LocateFixed, MoveHorizontal, Repeat, Search, TrendingUp, UsersRound, Signpost } from "lucide-react";
 import {
   computeStats,
   cumulative,
@@ -14,12 +14,24 @@ import {
   type LatLng,
   type ProfilePoint,
 } from "../lib/geo";
-import { fetchElevations, fetchTrailGeometries, fetchTrailGeometry, fetchTrails, type BBox, type Trail } from "../lib/services";
+import {
+  fetchCommunityTraces,
+  fetchElevations,
+  fetchTrailGeometries,
+  fetchTrailGeometry,
+  fetchTrails,
+  type BBox,
+  type CommunityTrace,
+  type Trail,
+} from "../lib/services";
 
-type Filter = "all" | "short" | "mid" | "long" | "loop";
+type Source = "community" | "waymarked";
+type Filter = "all" | "run" | "hike" | "short" | "mid" | "long" | "loop";
 
-const FILTERS: { id: Filter; label: string }[] = [
-  { id: "all", label: "Toutes" },
+const FILTERS: { id: Filter; label: string; community?: boolean }[] = [
+  { id: "all", label: "Tous" },
+  { id: "run", label: "Course", community: true },
+  { id: "hike", label: "Rando", community: true },
   { id: "short", label: "< 10 km" },
   { id: "mid", label: "10 – 25 km" },
   { id: "long", label: "> 25 km" },
@@ -32,7 +44,35 @@ export const KIND_HINT: Record<Trail["kind"], string> = {
   PR: "Petite Randonnée",
   Trail: "Parcours de trail",
   Rando: "Sentier balisé",
+  Course: "Course partagée",
+  Marche: "Randonnée partagée",
 };
+
+const MONTH = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric" });
+const DAY = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+
+/** A shared GPS trace, shown like any other route. */
+function traceToTrail(t: CommunityTrace): Trail {
+  const km = formatDistance(t.distance);
+  const generic =
+    t.sport === "run" ? (t.loop ? `Boucle de course de ${km}` : `Course de ${km}`) : t.loop ? `Boucle à pied de ${km}` : `Randonnée de ${km}`;
+  const when = MONTH.format(t.date);
+  return {
+    id: t.id,
+    name: t.name || generic,
+    ref: "",
+    kind: t.sport === "run" ? "Course" : "Marche",
+    distance: t.distance,
+    loop: t.loop,
+    description: `Enregistrée le ${DAY.format(t.date)}${t.author ? ` par ${t.author}` : ""}, à ${t.speed.toFixed(1).replace(".", ",")} km/h de moyenne en mouvement.${
+      t.partial ? " La trace continue hors de la zone : seule sa partie dans la zone est affichée." : ""
+    }`,
+    operator: t.author ?? "",
+    long: t.partial,
+    byline: t.author ? `par ${t.author} · ${when}` : `trace anonyme · ${when}`,
+    link: t.traceId && t.author ? `https://www.openstreetmap.org/user/${encodeURIComponent(t.author)}/traces/${t.traceId}` : undefined,
+  };
+}
 
 /** How many routes get their line and figures loaded at once. */
 const BATCH = 10;
@@ -78,8 +118,15 @@ interface Props {
 }
 
 export default function Explorer(p: Props) {
+  const [source, setSource] = useState<Source>("community");
   const [trails, setTrails] = useState<Trail[] | null>(null);
-  const [lines, setLines] = useState<Map<number, LatLng[]>>(new Map());
+  const [lines, setLinesState] = useState<Map<number, LatLng[]>>(new Map());
+  // Kept in step with the state, for the loaders that run between renders
+  const linesRef = useRef(lines);
+  const setLines = (m: Map<number, LatLng[]>) => {
+    linesRef.current = m;
+    setLinesState(m);
+  };
   const [stats, setStats] = useState<Map<number, TourStats>>(new Map());
   const [loading, setLoading] = useState(false);
   const [loadingLines, setLoadingLines] = useState(false);
@@ -93,6 +140,8 @@ export default function Explorer(p: Props) {
 
   // Figures follow the chosen activity and pace, without new requests
   const elevations = useRef(new Map<number, ProfilePoint[]>());
+  // A shared outing is timed for what it was (a run or a walk), a waymarked route for the chosen activity
+  const sportOf = useRef(new Map<number, Activity>());
   const computeFor = (id: number, line: LatLng[]): TourStats => {
     const profile = elevations.current.get(id) ?? [];
     const cum = cumulative(line);
@@ -101,7 +150,7 @@ export default function Explorer(p: Props) {
     return {
       distance,
       gain: st.gain,
-      duration: estimateDuration(p.activity, st, p.runPace, p.hikeSpeed),
+      duration: estimateDuration(sportOf.current.get(id) ?? p.activity, st, p.runPace, p.hikeSpeed),
       level: difficulty(st),
     };
   };
@@ -114,29 +163,41 @@ export default function Explorer(p: Props) {
   const [status, setStatus] = useState<string | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
 
+  const pending = useRef(new Set<number>());
+  /** Lines (waymarked routes) and elevations of a batch of routes, once each. */
   const loadLines = async (batch: Trail[], area: BBox, signal: AbortSignal) => {
-    const ids = batch.filter((t) => !lines.has(t.id)).map((t) => t.id);
-    if (!ids.length) return;
+    const ids = batch.filter((t) => t.id > 0 && !linesRef.current.has(t.id)).map((t) => t.id);
+    const todo = () => batch.filter((t) => linesRef.current.has(t.id) && !elevations.current.has(t.id) && !pending.current.has(t.id));
+    if (!ids.length && !todo().length) return;
     setLoadingLines(true);
     try {
-      // Clipped to the searched area: a long-distance route only costs its local section
-      const got = await fetchTrailGeometries(ids, area, signal);
-      setLines((m) => new Map([...m, ...got]));
+      if (ids.length) {
+        // Clipped to the searched area: a long-distance route only costs its local section
+        const got = await fetchTrailGeometries(ids, area, signal);
+        if (signal.aborted) return;
+        setLines(new Map([...linesRef.current, ...got]));
+      }
       // Elevation for D+ and duration, from terrain tiles (no rate limit)
       await Promise.all(
-        [...got].map(async ([id, line]) => {
+        todo().map(async (t) => {
+          const line = linesRef.current.get(t.id)!;
+          pending.current.add(t.id);
           try {
-            elevations.current.set(id, await fetchElevations(resample(line, 120, 30)));
+            const profile = await fetchElevations(resample(line, 120, 30), signal);
+            // Not if the line changed meanwhile
+            if (linesRef.current.get(t.id) === line) elevations.current.set(t.id, profile);
           } catch {
             /* figures stay without elevation */
+          } finally {
+            pending.current.delete(t.id);
           }
         }),
       );
-      setLines((m) => new Map(m));
+      if (!signal.aborted) setLines(new Map(linesRef.current));
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
-      setLoadingLines(false);
+      if (!signal.aborted) setLoadingLines(false);
     }
   };
 
@@ -148,31 +209,67 @@ export default function Explorer(p: Props) {
   };
 
   /** Searches a box around `c` (half-size in degrees of latitude). */
-  const searchAround = async (c: LatLng, half: number, note: string | null = null) => {
+  const searchAround = async (c: LatLng, half: number, note: string | null = null, from: Source = source) => {
     ctrlRef.current?.abort();
     const ctrl = new AbortController();
     ctrlRef.current = ctrl;
     const area = boxAround(c, half);
     setLoading(true);
     setError(note);
-    setStatus("Recherche des sentiers balisés…");
+    const done = () => {
+      setStatus(null);
+      setLoading(false);
+    };
     try {
+      if (from === "community") {
+        setStatus("Lecture des traces GPS partagées…");
+        elevations.current.clear();
+        sportOf.current.clear();
+        setShown(BATCH);
+        // Shown as soon as the first pages are read, completed as the next ones come
+        const show = (traces: CommunityTrace[]) => {
+          if (ctrl.signal.aborted) return;
+          const known = new Map(traces.map((t) => [t.id, t.line]));
+          // A recording that grew with the last page gets its figures again
+          for (const [id, line] of known) if (linesRef.current.get(id) !== line) elevations.current.delete(id);
+          for (const t of traces) sportOf.current.set(t.id, t.sport);
+          const found = traces.map(traceToTrail);
+          setLines(known);
+          setOrigin(c);
+          setBox(area);
+          setTrails(found);
+          // The closest ones get their figures first
+          const near = [...traces].sort((x, y) => distanceTo(c, x.line) - distanceTo(c, y.line)).slice(0, BATCH);
+          loadLines(found.filter((t) => near.some((x) => x.id === t.id)), area, ctrl.signal);
+        };
+        show(
+          await fetchCommunityTraces(area, {
+            signal: ctrl.signal,
+            onTraces: (t) => {
+              show(t);
+              setStatus("D'autres traces arrivent…");
+            },
+          }),
+        );
+        done();
+        return;
+      }
+      setStatus("Recherche des sentiers balisés…");
       const found = await fetchTrails(area, ctrl.signal);
       // Day routes first, multi-day sections after
       found.sort((a, z) => Number(isLong(a)) - Number(isLong(z)));
       elevations.current.clear();
+      sportOf.current.clear();
       setLines(new Map());
       setOrigin(c);
       setBox(area);
       setTrails(found);
       setShown(BATCH);
-      setStatus(null);
-      setLoading(false);
+      done();
       loadLines(found.slice(0, BATCH), area, ctrl.signal);
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message || "Recherche impossible pour le moment.");
-      setStatus(null);
-      setLoading(false);
+      done();
     }
   };
 
@@ -244,7 +341,7 @@ export default function Explorer(p: Props) {
       setBusyId(t.id);
       try {
         const line = await fetchTrailGeometry(t.id, box ?? undefined);
-        setLines((m) => new Map(m).set(t.id, line));
+        setLines(new Map(linesRef.current).set(t.id, line));
         tour = { trail: t, line, stats: computeFor(t.id, line) };
       } catch (e) {
         setError((e as Error).message || "Tracé indisponible.");
@@ -274,6 +371,8 @@ export default function Explorer(p: Props) {
     return trails.filter((t) => {
       if (words && !`${t.name} ${t.ref} ${t.operator}`.toLowerCase().includes(words)) return false;
       const d = stats.get(t.id)?.distance ?? t.distance;
+      if (filter === "run") return t.kind === "Course";
+      if (filter === "hike") return t.kind === "Marche";
       if (filter === "loop") return t.loop;
       if (filter === "short") return d != null && d < 10000;
       if (filter === "mid") return d != null && d >= 10000 && d <= 25000;
@@ -288,15 +387,39 @@ export default function Explorer(p: Props) {
         const da = nearDist.get(a.id);
         const dz = nearDist.get(z.id);
         if (da == null || dz == null) return Number(da == null) - Number(dz == null);
-        return Number(isLong(a)) - Number(isLong(z)) || da - dz;
+        // Multi-day routes after day routes; shared traces only by distance
+        return (source === "waymarked" ? Number(isLong(a)) - Number(isLong(z)) : 0) || da - dz;
       }),
-    [filtered, nearDist],
+    [filtered, nearDist, source],
   );
 
   const visible = sorted.slice(0, shown);
+  const noun = source === "community" ? "parcours" : filtered.length > 1 ? "randonnées" : "randonnée";
+
+  const switchSource = (next: Source) => {
+    if (next === source) return;
+    cancel();
+    setSource(next);
+    setFilter("all");
+    setQ("");
+    // Same place, other kind of routes
+    if (origin && trails) searchAround(origin, box ? (box[2] - box[0]) / 2 : 0.08, null, next);
+    else {
+      setTrails(null);
+      setError(null);
+    }
+  };
 
   return (
     <div className="block explorer">
+      <div className="segmented">
+        <button className={source === "community" ? "active" : ""} onClick={() => switchSource("community")}>
+          <UsersRound size={15} /> Communauté
+        </button>
+        <button className={source === "waymarked" ? "active" : ""} onClick={() => switchSource("waymarked")}>
+          <Signpost size={15} /> Sentiers balisés
+        </button>
+      </div>
       <div className="row">
         <button className="primary" onClick={searchNearMe} disabled={loading}>
           {loading ? <Loader2 size={17} className="spin" /> : <LocateFixed size={17} />}
@@ -317,15 +440,16 @@ export default function Explorer(p: Props) {
       {error && <div className="alert">{error}</div>}
       {!trails && !error && (
         <p className="muted small">
-          Les randonnées balisées autour de vous : GR, GR de Pays, PR et parcours de trail, avec leur distance, leur durée et leur
-          dénivelé.
+          {source === "community"
+            ? "Les sorties que des randonneurs et des coureurs ont enregistrées et partagées publiquement sur OpenStreetMap : boucles de course, randos à la journée, avec leur distance, leur durée et leur dénivelé."
+            : "Les randonnées balisées autour de vous : GR, GR de Pays, PR et parcours de trail, avec leur distance, leur durée et leur dénivelé."}
         </p>
       )}
 
       {trails && (
         <>
           <div className="chips scroll">
-            {FILTERS.map((f) => (
+            {FILTERS.filter((f) => !f.community || source === "community").map((f) => (
               <button key={f.id} className={filter === f.id ? "active" : ""} onClick={() => setFilter(f.id)}>
                 {f.label}
               </button>
@@ -335,7 +459,7 @@ export default function Explorer(p: Props) {
             <input className="field" placeholder="Filtrer par nom (ex. GR 5, lac…)" value={q} onChange={(e) => setQ(e.target.value)} />
           )}
           <p className="muted small">
-            {filtered.length} randonnée{filtered.length > 1 ? "s" : ""}
+            {filtered.length} {noun}
             {loadingLines && " · calcul des tracés…"}
           </p>
           <ul className="tours" ref={listRef}>
@@ -349,6 +473,7 @@ export default function Explorer(p: Props) {
                     <Thumb line={line ?? null} loading={busyId === t.id || (!line && loadingLines)} kind={t.kind} />
                     <span className="tour-body">
                       <b>{t.name}</b>
+                      {t.byline && <span className="tour-byline">{t.byline}</span>}
                       {st ? (
                         <span className="tour-stats">
                           <span>
@@ -364,7 +489,7 @@ export default function Explorer(p: Props) {
                       ) : (
                         <span className="tour-stats muted">
                           {t.distance ? formatDistance(t.distance) : KIND_HINT[t.kind]}
-                          {isLong(t) && " · section dans la zone"}
+                          {isLong(t) && (source === "community" ? " · partie dans la zone" : " · section dans la zone")}
                         </span>
                       )}
                       <span className="tour-meta">
@@ -377,14 +502,19 @@ export default function Explorer(p: Props) {
                             <Repeat size={11} /> boucle
                           </span>
                         )}
-                        {isLong(t) && st && <span>section de l'itinéraire</span>}
+                        {isLong(t) && st && <span>{source === "community" ? "partie de la sortie" : "section de l'itinéraire"}</span>}
                         {nearDist.has(t.id) && <span>à {formatDistance(nearDist.get(t.id)!)}</span>}
                       </span>
                     </span>
                   </button>
-                  {selected && t.description && (
+                  {selected && (t.description || t.link) && (
                     <div className="tour-actions">
-                      <p>{t.description}</p>
+                      {t.description && <p>{t.description}</p>}
+                      {t.link && (
+                        <a className="link" href={t.link} target="_blank" rel="noreferrer">
+                          <ExternalLink size={13} /> Voir la trace sur OpenStreetMap
+                        </a>
+                      )}
                     </div>
                   )}
                 </li>
@@ -400,11 +530,26 @@ export default function Explorer(p: Props) {
                 if (box && ctrlRef.current) loadLines(next, box, ctrlRef.current.signal);
               }}
             >
-              Voir plus de randonnées
+              Voir plus de {source === "community" ? "parcours" : "randonnées"}
             </button>
           )}
-          {trails.length === 0 && <p className="muted">Aucun sentier balisé connu ici. Essayez une autre zone.</p>}
-          <p className="muted small">© contributeurs OpenStreetMap (ODbL) — vérifiez toujours le balisage sur le terrain.</p>
+          {trails.length === 0 &&
+            (source === "community" ? (
+              <p className="muted">
+                Personne n'a encore partagé de sortie à pied ici. Essayez une zone voisine, ou les{" "}
+                <button className="link" onClick={() => switchSource("waymarked")}>
+                  sentiers balisés
+                </button>
+                .
+              </p>
+            ) : (
+              <p className="muted">Aucun sentier balisé connu ici. Essayez une autre zone.</p>
+            ))}
+          <p className="muted small">
+            {source === "community"
+              ? "Traces GPS publiques partagées par leurs auteurs sur OpenStreetMap — un tracé enregistré n'est pas forcément un chemin autorisé : vérifiez sur place."
+              : "© contributeurs OpenStreetMap (ODbL) — vérifiez toujours le balisage sur le terrain."}
+          </p>
         </>
       )}
     </div>

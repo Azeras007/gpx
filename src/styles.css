@@ -1203,6 +1203,33 @@ input[type="range"]::-moz-range-thumb {
   color: var(--accent);
   border-color: currentColor;
 }
+/* Shared outings: the walker's own colors, no waymark */
+.trail-badge.k-Course {
+  color: #b4472e;
+  border-color: currentColor;
+}
+.trail-badge.k-Marche {
+  color: #2e5a45;
+  border-color: currentColor;
+}
+.tour-byline {
+  display: block;
+  font-size: 11.5px;
+  font-style: italic;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tour-actions .link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+}
+.explorer > .segmented {
+  margin-bottom: 10px;
+}
 .trail-actions {
   display: flex;
   flex-direction: column;
@@ -2194,6 +2221,13 @@ kbd {
     repeating-linear-gradient(35deg, transparent 0 9px, rgba(185, 174, 152, 0.28) 9px 10px),
     var(--sunken);
 }
+/* A shared outing is drawn in its own sport's color */
+.thumbnail.k-Course {
+  color: #b4472e;
+}
+.thumbnail.k-Marche {
+  color: #2e5a45;
+}
 .thumbnail svg {
   width: 100%;
   height: 100%;
@@ -2262,8 +2296,12 @@ kbd {
 }
 .tour-meta .trail-badge.k-Trail,
 .tour-meta .trail-badge.k-Rando,
+.tour-meta .trail-badge.k-Course,
+.tour-meta .trail-badge.k-Marche,
 .tour-card .trail-badge.k-Trail,
-.tour-card .trail-badge.k-Rando {
+.tour-card .trail-badge.k-Rando,
+.tour-card .trail-badge.k-Course,
+.tour-card .trail-badge.k-Marche {
   width: auto;
   height: auto;
   padding: 0 4px;

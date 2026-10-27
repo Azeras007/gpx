@@ -698,11 +698,12 @@ export default function App() {
     setPois([]);
     setCurrentId(null);
     setName(t.ref && !t.name.includes(t.ref) ? `${t.ref} — ${t.name}` : t.name);
-    if (t.kind === "Trail") setActivity("run");
+    if (t.kind === "Trail" || t.kind === "Course") setActivity("run");
+    else if (t.kind === "Marche") setActivity("hike");
     setPreview(null);
     setTab("trace");
     fitTo(wps);
-    toast("Randonnée chargée : modifiez-la ou exportez-la vers votre montre", "success");
+    toast("Parcours chargé : modifiez-le ou exportez-le vers votre montre", "success");
   };
 
   const importRef = useRef(importGpx);
@@ -1359,7 +1360,8 @@ export default function App() {
           </>
         )}
 
-        {tab === "explore" && (
+        {/* Kept mounted: results survive a look at another tab */}
+        <div hidden={tab !== "explore"}>
           <Explorer
             map={mapRef.current}
             activity={activity}
@@ -1372,7 +1374,7 @@ export default function App() {
             }}
             onToursChange={setTours}
           />
-        )}
+        </div>
 
         {tab === "plan" && !plan.isPro && (
           <div className="block teaser">
@@ -1565,6 +1567,7 @@ export default function App() {
             {preview.trail.ref && preview.trail.ref !== preview.trail.name ? ` · ${preview.trail.ref}` : null}
           </span>
           <b className="tour-card-name">{preview.trail.name}</b>
+          {preview.trail.byline && <span className="tour-byline">{preview.trail.byline}</span>}
           {preview.stats && (
             <div className="tour-card-stats">
               <span>
