@@ -74,6 +74,12 @@ function traceToTrail(t: CommunityTrace): Trail {
   };
 }
 
+/**
+ * Half-size (degrees of latitude) of the area searched around a point. Shared
+ * traces are dense and the server slows down with the area: about 10 × 7 km.
+ */
+const AROUND: Record<Source, number> = { community: 0.045, waymarked: 0.08 };
+
 /** How many routes get their line and figures loaded at once. */
 const BATCH = 10;
 /** Multi-day routes: only their section inside the searched area is shown. */
@@ -278,13 +284,13 @@ export default function Explorer(p: Props) {
     const b = p.map.getBounds();
     const c = p.map.getCenter();
     // At most ~20 km across: enough for a day out, light for the public servers
-    searchAround([c.lat, c.lng], Math.min(0.09, (b.getNorth() - b.getSouth()) / 2));
+    searchAround([c.lat, c.lng], Math.min(source === "community" ? 0.05 : 0.09, (b.getNorth() - b.getSouth()) / 2));
   };
 
   const searchNearMe = () => {
     const fallback = (why: string) => {
       const c = p.map?.getCenter();
-      if (c) searchAround([c.lat, c.lng], 0.08, why);
+      if (c) searchAround([c.lat, c.lng], AROUND[source], why);
       else {
         setError(why);
         setLoading(false);
@@ -308,7 +314,7 @@ export default function Explorer(p: Props) {
         clearTimeout(timer);
         const c: LatLng = [pos.coords.latitude, pos.coords.longitude];
         p.map?.setView(c, 13);
-        searchAround(c, 0.08);
+        searchAround(c, AROUND[source]);
       },
       (err) => {
         if (done) return;
@@ -403,7 +409,7 @@ export default function Explorer(p: Props) {
     setFilter("all");
     setQ("");
     // Same place, other kind of routes
-    if (origin && trails) searchAround(origin, box ? (box[2] - box[0]) / 2 : 0.08, null, next);
+    if (origin && trails) searchAround(origin, AROUND[next], null, next);
     else {
       setTrails(null);
       setError(null);
