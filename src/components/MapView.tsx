@@ -68,6 +68,11 @@ interface Props {
   replayTrail: LatLng[] | null;
   /** A waymarked trail being previewed from the explorer. */
   preview: LatLng[] | null;
+  /** Other trails found by the explorer, drawn thin and clickable. */
+  tours: { id: number; line: LatLng[] }[];
+  onTourClick: (id: number) => void;
+  /** Extra space kept free at the bottom when fitting a route (mobile sheet). */
+  bottomInset: number;
   hover: LatLng | null;
   kmMarks: { pos: LatLng; km: number }[];
   overlaps: LatLng[][];
@@ -101,6 +106,7 @@ export default function MapView(props: Props) {
   const osmGroup = useRef<L.LayerGroup | null>(null);
   const replayLine = useRef<L.Polyline | null>(null);
   const previewGroup = useRef<L.LayerGroup | null>(null);
+  const toursGroup = useRef<L.LayerGroup | null>(null);
   const hillLayer = useRef<L.TileLayer | null>(null);
   const poiGroup = useRef<L.LayerGroup | null>(null);
   const hoverMarker = useRef<L.CircleMarker | null>(null);
@@ -124,6 +130,7 @@ export default function MapView(props: Props) {
     L.control.scale({ position: "bottomright", imperial: false }).addTo(m);
     m.attributionControl.setPrefix(false);
     legGroup.current = L.layerGroup().addTo(m);
+    toursGroup.current = L.layerGroup().addTo(m);
     previewGroup.current = L.layerGroup().addTo(m);
     slopeGroup.current = L.layerGroup().addTo(m);
     overlapGroup.current = L.layerGroup().addTo(m);
@@ -313,10 +320,25 @@ export default function MapView(props: Props) {
     L.polyline(props.preview, { color: "#1d1c18", weight: 4, dashArray: "8 7", lineCap: "round", interactive: false }).addTo(g);
     L.circleMarker(props.preview[0], { radius: 7, color: "#fff", weight: 3, fillColor: "#2e5a45", fillOpacity: 1, interactive: false }).addTo(g);
     map.current!.fitBounds(L.latLngBounds(props.preview), {
-      paddingTopLeft: window.innerWidth < 860 ? [30, 90] : [440, 90],
-      paddingBottomRight: window.innerWidth < 860 ? [30, 260] : [90, 260],
+      paddingTopLeft: window.innerWidth < 860 ? [24, 80] : [440, 90],
+      paddingBottomRight: window.innerWidth < 860 ? [24, cb.current.bottomInset + 24] : [90, 280],
     });
   }, [props.preview]);
+
+  // Every trail found around: thin lines, a tap selects one
+  useEffect(() => {
+    const g = toursGroup.current!;
+    g.clearLayers();
+    props.tours.forEach(({ id, line }) => {
+      const visible = L.polyline(line, { color: "#1d1c18", weight: 3, opacity: 0.55, dashArray: "6 5", interactive: false });
+      const hit = L.polyline(line, { weight: 16, opacity: 0, bubblingMouseEvents: false })
+        .on("click", () => cb.current.onTourClick(id))
+        .on("mouseover", () => visible.setStyle({ opacity: 0.95, weight: 4 }))
+        .on("mouseout", () => visible.setStyle({ opacity: 0.55, weight: 3 }));
+      visible.addTo(g);
+      hit.addTo(g);
+    });
+  }, [props.tours]);
 
   // Replay trail
   useEffect(() => {

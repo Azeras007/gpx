@@ -223,6 +223,53 @@ export interface OsmPoi {
 }
 
 /** Useful hiking/running amenities from OpenStreetMap inside a bounding box. */
+// ── Overpass (OpenStreetMap queries) ──────────────────────────────────────────
+// The main public server is often busy: queries go to mirrors when it fails,
+// and the last server that answered is tried first next time.
+
+const OVERPASS_SERVERS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+];
+let preferredServer = 0;
+
+/** The query was too heavy for the server (it answers 200 with a "runtime error" remark). */
+export class OverpassTooBig extends Error {}
+
+async function overpass<T>(query: string, signal?: AbortSignal): Promise<T> {
+  let lastError: unknown = null;
+  for (let i = 0; i < OVERPASS_SERVERS.length; i++) {
+    const idx = (preferredServer + i) % OVERPASS_SERVERS.length;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    const onAbort = () => ctrl.abort();
+    signal?.addEventListener("abort", onAbort);
+    try {
+      const res = await fetch(OVERPASS_SERVERS[idx], {
+        method: "POST",
+        body: new URLSearchParams({ data: query }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      if (typeof json.remark === "string" && /runtime error|timed out|out of memory/i.test(json.remark)) {
+        throw new OverpassTooBig(json.remark);
+      }
+      preferredServer = idx;
+      return json as T;
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      if (e instanceof OverpassTooBig) throw e;
+      lastError = e;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+  throw new Error(`Serveurs OpenStreetMap injoignables (${(lastError as Error)?.message ?? "réseau"})`);
+}
+
 export async function fetchOsmPois(south: number, west: number, north: number, east: number, signal?: AbortSignal): Promise<OsmPoi[]> {
   const bb = `${south.toFixed(5)},${west.toFixed(5)},${north.toFixed(5)},${east.toFixed(5)}`;
   const q = `[out:json][timeout:25];(
@@ -234,13 +281,7 @@ node["natural"="peak"]["name"](${bb});
 node["tourism"="viewpoint"](${bb});
 node["amenity"="toilets"](${bb});
 );out body 400;`;
-  const res = await fetch("https://overpass-api.de/api/interpreter", {
-    method: "POST",
-    body: new URLSearchParams({ data: q }),
-    signal,
-  });
-  if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
-  const json = (await res.json()) as { elements: { id: number; lat: number; lon: number; tags?: Record<string, string> }[] };
+  const json = await overpass<{ elements: { id: number; lat: number; lon: number; tags?: Record<string, string> }[] }>(q, signal);
   return json.elements.map((e) => {
     const t = e.tags ?? {};
     const kind: OsmPoi["kind"] =
@@ -288,16 +329,34 @@ function parseDistance(v: string | undefined): number | null {
   return unit === "m" ? n : unit === "mi" ? n * 1609.34 : n * 1000;
 }
 
-/** Waymarked walking routes whose extent intersects the box. */
+type TrailElements = {
+  elements: { id: number; tags?: Record<string, string>; bounds?: { minlat: number; minlon: number; maxlat: number; maxlon: number } }[];
+};
+
+/** Searches at most ~30 km across: wider boxes make the public servers time out. */
+const MAX_HALF_SPAN = 0.14;
+
+/**
+ * Waymarked walking routes whose extent intersects the box. Too large a box
+ * is cut down around its center, and cut again if the server still gives up.
+ */
 export async function fetchTrails(south: number, west: number, north: number, east: number, signal?: AbortSignal): Promise<Trail[]> {
-  const bb = `${south.toFixed(4)},${west.toFixed(4)},${north.toFixed(4)},${east.toFixed(4)}`;
-  const q = `[out:json][timeout:25];relation["type"="route"]["route"~"^(hiking|foot|running)$"](${bb});out tags bb 150;`;
-  const res = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", body: new URLSearchParams({ data: q }), signal });
-  if (!res.ok) throw new Error(res.status === 429 ? "Serveur de randonnées saturé, réessayez dans une minute" : `Erreur ${res.status}`);
-  const json = (await res.json()) as {
-    elements: { id: number; tags?: Record<string, string>; bounds?: { minlat: number; minlon: number; maxlat: number; maxlon: number } }[];
-  };
-  return json.elements
+  const cLat = (south + north) / 2;
+  const cLng = (west + east) / 2;
+  let half = Math.min(MAX_HALF_SPAN, (north - south) / 2, (east - west) / 2 / Math.cos((cLat * Math.PI) / 180) || MAX_HALF_SPAN);
+  let json: TrailElements | null = null;
+  for (let attempt = 0; attempt < 3 && !json; attempt++) {
+    const dLng = half / Math.cos((cLat * Math.PI) / 180);
+    const bb = `${(cLat - half).toFixed(4)},${(cLng - dLng).toFixed(4)},${(cLat + half).toFixed(4)},${(cLng + dLng).toFixed(4)}`;
+    const q = `[out:json][timeout:25];relation["type"="route"]["route"~"^(hiking|foot|running)$"](${bb});out tags bb 150;`;
+    try {
+      json = await overpass<TrailElements>(q, signal);
+    } catch (e) {
+      if (!(e instanceof OverpassTooBig) || attempt === 2) throw e instanceof OverpassTooBig ? new Error("Zone trop chargée, zoomez un peu plus") : e;
+      half /= 2;
+    }
+  }
+  return json!.elements
     .filter((e) => e.tags && (e.tags.name || e.tags.ref))
     .map((e) => {
       const t = e.tags!;
@@ -321,29 +380,27 @@ export async function fetchTrails(south: number, west: number, north: number, ea
     });
 }
 
+type Members = { type: string; role: string; geometry?: { lat: number; lon: number }[] }[];
+
 /**
- * Geometry of one route, stitched into a single line. Relation members come in
- * route order but each way may be drawn in either direction, and alternatives
- * or short gaps are common: ways are chained end to end (flipping when
- * needed) and the longest continuous chain is kept.
+ * Stitches a route relation into a single line. Members come in route order
+ * but each way may be drawn in either direction, and alternatives or short
+ * gaps are common: ways are chained end to end (flipping when needed) and the
+ * longest continuous chain is kept.
  */
-export async function fetchTrailGeometry(id: number, signal?: AbortSignal): Promise<LatLng[]> {
-  const q = `[out:json][timeout:60];relation(${id});out geom;`;
-  const res = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", body: new URLSearchParams({ data: q }), signal });
-  if (!res.ok) throw new Error(`Erreur ${res.status}`);
-  const json = (await res.json()) as {
-    elements: { members?: { type: string; role: string; geometry?: { lat: number; lon: number }[] }[] }[];
-  };
+function stitch(members: Members): LatLng[] | null {
   const skip = /alternative|excursion|approach|connection|link/;
-  const ways = (json.elements[0]?.members ?? [])
+  const ways = members
     .filter((m) => m.type === "way" && m.geometry && m.geometry.length > 1 && !skip.test(m.role))
     .map((m) => m.geometry!.map((g) => [g.lat, g.lon] as LatLng));
-  if (!ways.length) throw new Error("Tracé introuvable pour cette randonnée");
+  if (!ways.length) return null;
   const chains: LatLng[][] = [];
   let cur: LatLng[] = [];
+  let first = true;
   for (const w of ways) {
     if (!cur.length) {
       cur = w.slice();
+      first = true;
       continue;
     }
     const end = cur[cur.length - 1];
@@ -351,22 +408,46 @@ export async function fetchTrailGeometry(id: number, signal?: AbortSignal): Prom
     const options = [
       { d: haversine(end, w[0]), apply: () => cur.push(...w.slice(1)) },
       { d: haversine(end, w[w.length - 1]), apply: () => cur.push(...w.slice(0, -1).reverse()) },
-      // The very first way may itself be reversed
-      ...(cur.length === ways[0].length
+      // The chain's very first way may itself be reversed
+      ...(first
         ? [
             { d: haversine(start, w[0]), apply: () => (cur = [...cur.slice().reverse(), ...w.slice(1)]) },
             { d: haversine(start, w[w.length - 1]), apply: () => (cur = [...cur.slice().reverse(), ...w.slice(0, -1).reverse()]) },
           ]
         : []),
     ];
-    const best = options.reduce((a, b) => (b.d < a.d ? b : a));
-    if (best.d < 300) best.apply();
-    else {
+    const best = options.reduce((x, y) => (y.d < x.d ? y : x));
+    if (best.d < 300) {
+      best.apply();
+      first = false;
+    } else {
       chains.push(cur);
       cur = w.slice();
+      first = true;
     }
   }
   chains.push(cur);
-  const length = (c: LatLng[]) => c.reduce((s, p, i) => (i ? s + haversine(c[i - 1], p) : 0), 0);
-  return chains.reduce((a, b) => (length(b) > length(a) ? b : a));
+  const length = (c: LatLng[]) => c.reduce((acc, p, i) => (i ? acc + haversine(c[i - 1], p) : 0), 0);
+  return chains.reduce((x, y) => (length(y) > length(x) ? y : x));
+}
+
+/** Geometry of one route, as a single line. */
+export async function fetchTrailGeometry(id: number, signal?: AbortSignal): Promise<LatLng[]> {
+  const lines = await fetchTrailGeometries([id], signal);
+  const line = lines.get(id);
+  if (!line) throw new Error("Tracé introuvable pour cette randonnée");
+  return line;
+}
+
+/** Geometries of several routes in a single request. */
+export async function fetchTrailGeometries(ids: number[], signal?: AbortSignal): Promise<Map<number, LatLng[]>> {
+  const out = new Map<number, LatLng[]>();
+  if (!ids.length) return out;
+  const q = `[out:json][timeout:60];relation(id:${ids.join(",")});out geom;`;
+  const json = await overpass<{ elements: { id: number; members?: Members }[] }>(q, signal);
+  for (const el of json.elements) {
+    const line = stitch(el.members ?? []);
+    if (line && line.length > 1) out.set(el.id, line);
+  }
+  return out;
 }
