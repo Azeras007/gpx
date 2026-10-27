@@ -46,7 +46,7 @@ import AccountModal from "./components/AccountModal";
 import { PoiIcon } from "./components/icons";
 import { useAccount } from "./lib/account";
 import { deleteRoute as deleteCloudRoute, listRoutes, RouteLimitError, saveRoute } from "./lib/cloud";
-import { FREE_ROUTE_LIMIT, PRO_FEATURES, usePlan, type ProFeature } from "./lib/plan";
+import { FREE_ROUTE_LIMIT, PERSONAL, PRO_FEATURES, usePlan, type ProFeature } from "./lib/plan";
 import {
   calories,
   computeSplits,
@@ -950,7 +950,7 @@ export default function App() {
                   <UserRound size={18} />
                 </button>
               ))}
-            {plan.paid ? (
+            {PERSONAL ? null : plan.paid ? (
               <span className="pro-pill">PRO</span>
             ) : plan.onTrial ? (
               <button className="trial-pill" onClick={() => setUpgrade({ feature: null })} title="Votre essai Pro">

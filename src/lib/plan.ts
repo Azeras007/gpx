@@ -23,6 +23,12 @@ export const PRO_FEATURES: Record<ProFeature, { title: string; pitch: string }> 
 };
 
 export const FREE_ROUTE_LIMIT = 5;
+
+/**
+ * Personal install (VITE_PERSONAL=true): everything is unlocked and the
+ * offer screens are hidden. Meant for running your own copy, not for selling.
+ */
+export const PERSONAL = import.meta.env.VITE_PERSONAL === "true";
 export const TRIAL_DAYS = 14;
 export const PRICES = { monthly: "3,99 €", yearly: "24,99 €", founder: "19,99 €" };
 
@@ -98,7 +104,7 @@ export function usePlan(user: User | null) {
   }, [user, refresh]);
 
   const now = Date.now();
-  const paid = isPaid(sub);
+  const paid = PERSONAL || isPaid(sub);
   const trialEnds = supabase
     ? sub?.trial_ends_at
       ? Date.parse(sub.trial_ends_at)
