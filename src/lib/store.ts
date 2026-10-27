@@ -119,5 +119,10 @@ export const defaultPrefs: Prefs = {
   exportFormat: "gpx",
   view: null,
 };
-export const loadPrefs = (): Prefs => ({ ...defaultPrefs, ...read<Partial<Prefs>>(PREFS_KEY, {}) });
+export const loadPrefs = (): Prefs => {
+  const p = { ...defaultPrefs, ...read<Partial<Prefs>>(PREFS_KEY, {}) };
+  // KML and GeoJSON exports were removed: fall back to GPX for older saved prefs.
+  if (p.exportFormat !== "gpx" && p.exportFormat !== "gpx-route") p.exportFormat = "gpx";
+  return p;
+};
 export const savePrefs = (p: Prefs) => write(PREFS_KEY, p);

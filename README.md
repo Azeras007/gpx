@@ -23,16 +23,38 @@ Dashboard moderne pour **tracer, analyser et exporter des traces GPX** de course
 - 🏷️ Difficulté, calories estimées, raccourcis clavier (touche `?`)
 - 📈 **Profil altimétrique** coloré selon la pente, synchronisé avec la carte au survol
 - 📊 Distance, D+, D-, altitude max, pente max, **durée estimée** (km-effort pour la course, DIN 33466 pour la rando)
-- 💾 **Export GPX** (trace ou itinéraire), **KML** et **GeoJSON**, avec altitudes, repères et horaires estimés en option
+- 💾 **Export GPX** (trace ou itinéraire), avec altitudes, repères et horaires estimés en option
 - 🔗 **Lien de partage** : tout le parcours est encodé dans l'URL
 - 📂 **Import GPX** (trk, rte ou wpt) et bibliothèque de parcours enregistrés dans le navigateur
 - 🔎 Recherche de lieux, géolocalisation, interface responsive (bottom sheet sur mobile)
+
+- 🧭 **Randonnées balisées** : GR, GR de Pays, PR et parcours de trail de la zone (OpenStreetMap), à prévisualiser et charger en un clic
+
+## Offre gratuite / Pro
+
+L'app distingue un niveau gratuit et un abonnement **Pro** (24,99 €/an ou 3,99 €/mois, essai de 14 jours) :
+boucle automatique, « ne jamais repasser », plan de sortie, horaires dans le GPX, cartes IGN et relief,
+points d'eau et refuges, parcours illimités (5 en gratuit).
+
+Avec Supabase et Stripe configurés, le statut Pro est décidé **côté serveur** (webhook Stripe, essai unique,
+limite de parcours appliquée par la base). Sans configuration, l'app tourne en mode local de démonstration.
+Toute la mise en place est décrite dans **[SETUP.md](SETUP.md)**.
+
+## Usage personnel
+
+Pour héberger votre propre copie sans abonnement, définissez `VITE_PERSONAL=true` (dans `.env.local` ou dans les
+variables d'environnement de l'hébergeur) : toutes les fonctions sont débloquées et les écrans d'offre disparaissent.
+
+## Pages
+
+- `index.html` : page d'accueil commerciale (présentation, tarifs, FAQ)
+- `app.html` : l'application
 
 ## Démarrer
 
 ```bash
 npm install
-npm run dev      # http://localhost:5173
+npm run dev      # http://localhost:5173 (accueil) et /app.html (application)
 npm run build    # build de production dans dist/
 ```
 
@@ -44,11 +66,18 @@ npm run build    # build de production dans dist/
 | Routage routes & chemins | [routing.openstreetmap.de](https://routing.openstreetmap.de) (OSRM, profil foot) |
 | Météo | [Open-Meteo Forecast API](https://open-meteo.com/en/docs) |
 | Altitudes | Tuiles [Terrarium](https://registry.opendata.aws/terrain-tiles/) (AWS Open Data), secours : Open-Meteo Elevation |
-| Points utiles | [Overpass API](https://overpass-api.de) (OpenStreetMap) |
+| Points utiles, randonnées balisées | [Overpass API](https://overpass-api.de) (OpenStreetMap) |
 | Fonds IGN | [Géoplateforme IGN](https://geoservices.ign.fr) |
 | Recherche | [Nominatim](https://nominatim.openstreetmap.org) |
 | Fonds de carte | OpenTopoMap, CARTO, Esri World Imagery, Waymarked Trails |
 
 ## Stack
 
-React 19 · TypeScript · Vite · Leaflet · lucide-react
+React 19 · TypeScript · Vite · Leaflet · Supabase (comptes, base de données, fonctions) · Stripe · polices Fraunces et Instrument Sans auto-hébergées
+
+## Avant un usage commercial
+
+Les serveurs publics gratuits utilisés (OpenTopoMap, CARTO, brouter.de, routing.openstreetmap.de, Overpass,
+Open-Meteo gratuit) sont réservés à un usage léger ou non commercial. Avant de vendre l'abonnement : fournisseur de
+tuiles sous licence, BRouter auto-hébergé, base de randonnées extraite d'OpenStreetMap, météo sous offre commerciale.
+Les données OpenStreetMap (ODbL) et IGN (licence Etalab) imposent une mention visible.

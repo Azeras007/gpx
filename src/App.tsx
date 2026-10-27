@@ -7,7 +7,6 @@ import {
   Compass,
   Clock,
   Download,
-  Flame,
   Footprints,
   FolderOpen,
   Gauge,
@@ -26,7 +25,6 @@ import {
   Ruler,
   Save,
   Search,
-  Shuffle,
   Sparkles,
   Spline,
   Square,
@@ -35,12 +33,20 @@ import {
   TrendingUp,
   Undo2,
   Upload,
+  UserRound,
   Waypoints,
   X,
 } from "lucide-react";
 import MapView, { BASE_LAYERS, OSM_KINDS } from "./components/MapView";
 import ElevationChart from "./components/ElevationChart";
 import Planner from "./components/Planner";
+import Explorer from "./components/Explorer";
+import UpgradeModal from "./components/UpgradeModal";
+import AccountModal from "./components/AccountModal";
+import { PoiIcon } from "./components/icons";
+import { useAccount } from "./lib/account";
+import { deleteRoute as deleteCloudRoute, listRoutes, RouteLimitError, saveRoute } from "./lib/cloud";
+import { FREE_ROUTE_LIMIT, PERSONAL, PRO_FEATURES, usePlan, type ProFeature } from "./lib/plan";
 import {
   calories,
   computeSplits,
@@ -71,7 +77,7 @@ import {
   type Waypoint,
 } from "./lib/geo";
 import { buildExport, downloadFile, EXPORT_FORMATS, parseGpx, slugify, type ExportFormat } from "./lib/gpx";
-import { fetchElevations, fetchOsmPois, routeLeg, searchPlaces, type Nogo, type OsmPoi, type Place } from "./lib/services";
+import { fetchElevations, fetchOsmPois, routeLeg, searchPlaces, type Nogo, type OsmPoi, type Place, type Trail } from "./lib/services";
 import { renderCard } from "./lib/shareImage";
 import { decodeRoute, encodeRoute } from "./lib/share";
 import {
@@ -86,7 +92,7 @@ import {
   type SavedRoute,
 } from "./lib/store";
 
-const ACCENTS: Record<Activity, string> = { run: "#ff5a36", hike: "#10b981" };
+const ACCENTS: Record<Activity, string> = { run: "#b4472e", hike: "#2e5a45" };
 
 const coordKey = (w: { lat: number; lng: number }) => `${w.lat.toFixed(6)},${w.lng.toFixed(6)}`;
 
@@ -114,7 +120,10 @@ function buildNogos(prev: LatLng[], a: LatLng, b: LatLng): Nogo[] {
 }
 
 type LegState = LatLng[] | "pending" | "error";
-type Tab = "trace" | "plan" | "library";
+type Tab = "trace" | "explore" | "plan" | "library";
+
+/** Map options that belong to the Pro plan. */
+const PRO_LAYERS = ["ignplan", "ignortho"];
 
 interface Toast {
   id: string;
@@ -150,7 +159,19 @@ export default function App() {
   const { waypoints, set, undo, redo, canUndo, canRedo } = useWaypointHistory(init.waypoints);
   const [pois, setPois] = useState<Poi[]>(init.pois);
   const [placing, setPlacing] = useState<PoiType | null>(null);
-  const [library, setLibrary] = useState<SavedRoute[]>(loadLibrary);
+  const toast = useCallback((text: string, tone: Toast["tone"] = "info") => {
+    const id = uid();
+    setToasts((t) => [...t.filter((x) => x.text !== text), { id, text, tone }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3600);
+  }, []);
+
+  const account = useAccount();
+  const [localLibrary, setLocalLibrary] = useState<SavedRoute[]>(loadLibrary);
+  const [cloudLibrary, setCloudLibrary] = useState<SavedRoute[] | null>(null);
+  /** Signed in: routes live in the account; otherwise in this browser. */
+  const cloud = !!account.user;
+  const library = cloud ? (cloudLibrary ?? []) : localLibrary;
+  const [accountOpen, setAccountOpen] = useState<{ reason: string | null } | null>(null);
   const [legCache, setLegCache] = useState<Map<string, LegState>>(() => new Map());
   const [profile, setProfile] = useState<ProfilePoint[]>([]);
   const [eleLoading, setEleLoading] = useState(false);
@@ -164,7 +185,43 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [withTimes, setWithTimes] = useState(false);
+  const plan = usePlan(account.user);
+  const wasPaid = useRef(plan.paid);
+  useEffect(() => {
+    if (plan.paid && !wasPaid.current) toast("Bienvenue dans GPX Studio Pro, merci !", "success");
+    wasPaid.current = plan.paid;
+  }, [plan.paid, toast]);
+
+  useEffect(() => {
+    if (!account.user) {
+      setCloudLibrary(null);
+      return;
+    }
+    let alive = true;
+    listRoutes()
+      .then((r) => alive && setCloudLibrary(r))
+      .catch(() => alive && toast("Impossible de charger vos parcours en ligne.", "error"));
+    return () => {
+      alive = false;
+    };
+  }, [account.user, toast]);
+  const [upgrade, setUpgrade] = useState<{ feature: ProFeature | null } | null>(null);
+  const [preview, setPreview] = useState<{ trail: Trail; line: LatLng[] } | null>(null);
+  /** Opens the Pro offer when a free user reaches for a Pro feature; true = blocked. */
+  const needPro = (f: ProFeature) => {
+    if (plan.isPro) return false;
+    setUpgrade({ feature: f });
+    return true;
+  };
+  const baseLayer = plan.isPro || !PRO_LAYERS.includes(prefs.baseLayer) ? prefs.baseLayer : "topo";
+  const hillshade = plan.isPro && prefs.hillshade;
+  const slopeColorsOn = plan.isPro && prefs.slopeColors;
   const [sheetOpen, setSheetOpen] = useState(false);
+  const sidebarRef = useRef<HTMLElement>(null);
+  // A closed bottom sheet always shows its top (distance and duration).
+  useEffect(() => {
+    if (!sheetOpen && sidebarRef.current) sidebarRef.current.scrollTop = 0;
+  }, [sheetOpen]);
   const [layersOpen, setLayersOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("trace");
@@ -174,11 +231,6 @@ export default function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const accent = ACCENTS[activity];
 
-  const toast = useCallback((text: string, tone: Toast["tone"] = "info") => {
-    const id = uid();
-    setToasts((t) => [...t.filter((x) => x.text !== text), { id, text, tone }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3600);
-  }, []);
 
   useEffect(() => {
     if (init.fromLink) toast("Parcours partagé chargé", "success");
@@ -343,7 +395,7 @@ export default function App() {
 
   // Route drawn in slope colors (needs elevations)
   const slopeLines = useMemo(() => {
-    if (!prefs.slopeColors || profile.length < 2 || profile.some((p) => p.ele == null)) return null;
+    if (!slopeColorsOn || profile.length < 2 || profile.some((p) => p.ele == null)) return null;
     const runs: { color: string; coords: LatLng[] }[] = [];
     for (let i = 1; i < profile.length; i++) {
       const a = profile[i - 1];
@@ -358,7 +410,7 @@ export default function App() {
       else runs.push({ color, coords: seg });
     }
     return runs;
-  }, [prefs.slopeColors, profile, track, cum]);
+  }, [slopeColorsOn, profile, track, cum]);
 
   // ── Replay animation ───────────────────────────────────────────────────────
   const replayRef = useRef(replay);
@@ -404,6 +456,7 @@ export default function App() {
 
   // ── OpenStreetMap amenities around the route ───────────────────────────────
   const findOsmPois = async () => {
+    if (needPro("amenities")) return;
     if (track.length < 2) return toast("Tracez un parcours d'abord.", "error");
     const lats = track.map((p) => p[0]);
     const lngs = track.map((p) => p[1]);
@@ -493,6 +546,7 @@ export default function App() {
   };
 
   const toggleAvoid = () => {
+    if (!prefs.avoid && needPro("avoid")) return;
     const avoid = !prefs.avoid;
     updatePrefs({ avoid, ...(avoid ? { mode: "snap" as const } : {}) });
     if (waypoints.length > 1) {
@@ -567,7 +621,7 @@ export default function App() {
       track,
       profile,
       pois,
-      duration: withTimes ? duration : undefined,
+      duration: withTimes && plan.isPro ? duration : undefined,
       start: prefs.start ? new Date(prefs.start).getTime() : undefined,
     });
     downloadFile(`${slugify(name)}.${fmt.ext}`, content, fmt.mime);
@@ -593,18 +647,70 @@ export default function App() {
     }
   };
 
+  const loadTrail = (t: Trail, line: LatLng[]) => {
+    let tol = 3;
+    let pts = simplify(line, tol);
+    while (pts.length > 350) pts = simplify(line, (tol *= 1.6));
+    const wps = pts.map((p) => mk(p, "line", false));
+    edit(wps);
+    setPois([]);
+    setCurrentId(null);
+    setName(t.ref && !t.name.includes(t.ref) ? `${t.ref} — ${t.name}` : t.name);
+    if (t.kind === "Trail") setActivity("run");
+    setPreview(null);
+    setTab("trace");
+    fitTo(wps);
+    toast("Randonnée chargée : modifiez-la ou exportez-la vers votre montre", "success");
+  };
+
   const importRef = useRef(importGpx);
   importRef.current = importGpx;
 
-  const saveToLibrary = () => {
+  const saveToLibrary = async () => {
     if (waypoints.length < 2) return toast("Rien à enregistrer pour l'instant.", "error");
+    if (cloud) {
+      const existing = cloudLibrary?.some((r) => r.id === currentId) ? currentId : null;
+      try {
+        const saved = await saveRoute({ id: existing, name, activity, waypoints, pois, distance, gain: stats.gain });
+        setCloudLibrary((l) => [saved, ...(l ?? []).filter((r) => r.id !== saved.id)]);
+        setCurrentId(saved.id);
+        toast("Parcours enregistré dans votre compte", "success");
+      } catch (e) {
+        if (e instanceof RouteLimitError) setUpgrade({ feature: "library" });
+        else toast("Enregistrement impossible, réessayez.", "error");
+      }
+      return;
+    }
+    const isNew = !localLibrary.some((r) => r.id === currentId);
+    if (isNew && localLibrary.length >= FREE_ROUTE_LIMIT && needPro("library")) return;
     const id = currentId ?? uid();
     const entry: SavedRoute = { id, name, activity, waypoints, pois, distance, gain: stats.gain, updatedAt: Date.now() };
-    const next = [entry, ...library.filter((r) => r.id !== id)];
-    setLibrary(next);
+    const next = [entry, ...localLibrary.filter((r) => r.id !== id)];
+    setLocalLibrary(next);
     saveLibrary(next);
     setCurrentId(id);
-    toast("Parcours enregistré", "success");
+    toast(account.enabled ? "Enregistré sur cet appareil — connectez-vous pour le retrouver partout" : "Parcours enregistré", "success");
+  };
+
+  /** Moves the routes saved in this browser to the account. */
+  const importLocalRoutes = async () => {
+    let moved = 0;
+    const left = [...localLibrary];
+    for (const r of localLibrary) {
+      try {
+        const saved = await saveRoute({ ...r, id: null });
+        setCloudLibrary((l) => [saved, ...(l ?? [])]);
+        left.splice(left.indexOf(r), 1);
+        moved++;
+      } catch (e) {
+        if (e instanceof RouteLimitError) setUpgrade({ feature: "library" });
+        else toast("Une partie des parcours n'a pas pu être importée.", "error");
+        break;
+      }
+    }
+    setLocalLibrary(left);
+    saveLibrary(left);
+    if (moved) toast(`${moved} parcours ajouté${moved > 1 ? "s" : ""} à votre compte`, "success");
   };
 
   const openRoute = (r: SavedRoute) => {
@@ -618,10 +724,19 @@ export default function App() {
     setTab("trace");
   };
 
-  const deleteRoute = (id: string) => {
-    const next = library.filter((r) => r.id !== id);
-    setLibrary(next);
-    saveLibrary(next);
+  const deleteRoute = async (id: string) => {
+    if (cloud) {
+      try {
+        await deleteCloudRoute(id);
+        setCloudLibrary((l) => (l ?? []).filter((r) => r.id !== id));
+      } catch {
+        return toast("Suppression impossible, réessayez.", "error");
+      }
+    } else {
+      const next = localLibrary.filter((r) => r.id !== id);
+      setLocalLibrary(next);
+      saveLibrary(next);
+    }
     if (id === currentId) setCurrentId(null);
   };
 
@@ -758,11 +873,16 @@ export default function App() {
     );
   };
 
+  const switchTab = (t: Tab) => {
+    setTab(t);
+    if (t !== "explore") setPreview(null);
+  };
+
   const paceLabel =
     activity === "run" ? `${formatPace(distance ? duration / 60 / (distance / 1000) : prefs.runPace)} /km` : null;
   const chartMarks = poisOnRoute
     .filter((p) => p.d != null)
-    .map((p) => ({ d: p.d!, emoji: POI_TYPES[p.type].emoji, name: p.name }));
+    .map((p) => ({ d: p.d!, type: p.type, name: p.name }));
 
   return (
     <div className="app" style={{ "--accent": accent } as React.CSSProperties} data-activity={activity}>
@@ -771,12 +891,13 @@ export default function App() {
         legs={legs}
         pendingLegs={pendingLegs}
         accent={accent}
-        baseLayer={prefs.baseLayer}
+        baseLayer={baseLayer}
         trails={prefs.trails}
-        hillshade={prefs.hillshade}
+        hillshade={hillshade}
         slopeLines={slopeLines}
         osmPois={osmPois}
         replayTrail={replayTrail}
+        preview={preview?.line ?? null}
         hover={replayPos ?? hover}
         kmMarks={kmMarks}
         overlaps={overlaps.lines}
@@ -803,21 +924,43 @@ export default function App() {
       />
 
       {/* ── Sidebar ───────────────────────────────────────────────────────── */}
-      <aside className={`panel sidebar ${sheetOpen ? "open" : ""}`}>
+      <aside ref={sidebarRef} className={`panel sidebar ${sheetOpen ? "open" : ""}`}>
         <button className="sheet-handle" onClick={() => setSheetOpen((o) => !o)} aria-label="Afficher le panneau">
           <span />
         </button>
         <header className="brand">
-          <div className="logo">
-            <svg viewBox="0 0 64 64">
-              <path d="M10 46 L23 25 L32 36 L41 17 L54 46" />
-            </svg>
+          <div className="logo" aria-hidden="true">
+            <span className="mark">
+              <i />
+              <i />
+            </span>
           </div>
           <div>
             <h1>GPX Studio</h1>
-            <p>Traceur de parcours</p>
+            <p>Carnet de parcours</p>
           </div>
           <div className="brand-actions">
+            {account.enabled &&
+              (account.user ? (
+                <button className="avatar" title={account.user.email ?? "Mon compte"} onClick={() => setAccountOpen({ reason: null })}>
+                  {(account.user.email ?? "?").slice(0, 1).toUpperCase()}
+                </button>
+              ) : (
+                <button className="icon-btn ghost" title="Se connecter" onClick={() => setAccountOpen({ reason: null })}>
+                  <UserRound size={18} />
+                </button>
+              ))}
+            {PERSONAL ? null : plan.paid ? (
+              <span className="pro-pill">PRO</span>
+            ) : plan.onTrial ? (
+              <button className="trial-pill" onClick={() => setUpgrade({ feature: null })} title="Votre essai Pro">
+                Essai · {plan.trialDaysLeft} j
+              </button>
+            ) : (
+              <button className="go-pro" onClick={() => setUpgrade({ feature: null })}>
+                Passer Pro
+              </button>
+            )}
             <button className="icon-btn ghost" title="Raccourcis & astuces (?)" onClick={() => setHelpOpen(true)}>
               <HelpCircle size={18} />
             </button>
@@ -842,7 +985,7 @@ export default function App() {
           <div className="hero-main">
             <span className="label">Distance</span>
             <div className="big">
-              {distance >= 1000 ? (distance / 1000).toFixed(2) : Math.round(distance)}
+              {distance >= 1000 ? (distance / 1000).toFixed(2).replace(".", ",") : Math.round(distance)}
               <small>{distance >= 1000 ? "km" : "m"}</small>
             </div>
             {distance > 0 && <span className={`level level-${level.level}`}>{level.label}</span>}
@@ -857,13 +1000,16 @@ export default function App() {
         </section>
 
         <nav className="tabs">
-          <button className={tab === "trace" ? "active" : ""} onClick={() => setTab("trace")}>
+          <button className={tab === "trace" ? "active" : ""} onClick={() => switchTab("trace")}>
             <PenLine size={15} /> Tracer
           </button>
-          <button className={tab === "plan" ? "active" : ""} onClick={() => setTab("plan")}>
+          <button className={tab === "explore" ? "active" : ""} onClick={() => switchTab("explore")}>
+            <Compass size={15} /> Explorer
+          </button>
+          <button className={tab === "plan" ? "active" : ""} onClick={() => switchTab("plan")}>
             <CalendarClock size={15} /> Planifier
           </button>
-          <button className={tab === "library" ? "active" : ""} onClick={() => setTab("library")}>
+          <button className={tab === "library" ? "active" : ""} onClick={() => switchTab("library")}>
             <FolderOpen size={15} /> Parcours
             {library.length > 0 && <i>{library.length}</i>}
           </button>
@@ -876,19 +1022,12 @@ export default function App() {
               <Stat icon={<TrendingDown size={14} />} label="D-" value={`${Math.round(stats.loss)} m`} tone="down" loading={eleLoading} />
               <Stat icon={<Mountain size={14} />} label="Alt. max" value={stats.maxEle != null ? `${Math.round(stats.maxEle)} m` : "—"} />
               <Stat icon={<Gauge size={14} />} label="Pente max" value={`${stats.maxSlope.toFixed(0)} %`} />
-              <Stat
-                icon={<Repeat size={14} />}
-                label="Repassage"
-                value={overlaps.length ? formatDistance(overlaps.length) : "Aucun"}
-                tone={overlaps.length ? "warn" : undefined}
-              />
-              <Stat icon={<Flame size={14} />} label="Calories" value={`≈ ${Math.round(kcal)} kcal`} />
             </div>
 
             <div className="block">
               <div className="block-head">
                 <span>{activity === "run" ? "Allure sur le plat" : "Vitesse de marche"}</span>
-                <b>{activity === "run" ? `${formatPace(prefs.runPace)} /km` : `${prefs.hikeSpeed.toFixed(1)} km/h`}</b>
+                <b>{activity === "run" ? `${formatPace(prefs.runPace)} /km` : `${prefs.hikeSpeed.toFixed(1).replace(".", ",")} km/h`}</b>
               </div>
               {activity === "run" ? (
                 <input type="range" min={3} max={10} step={1 / 12} value={prefs.runPace} onChange={(e) => updatePrefs({ runPace: +e.target.value })} />
@@ -918,10 +1057,10 @@ export default function App() {
                 <div className="chips">
                   <span>Préférer</span>
                   <button className={prefs.profile === "trails" ? "active" : ""} onClick={() => updatePrefs({ profile: "trails" })}>
-                    🌲 Sentiers
+                    Sentiers
                   </button>
                   <button className={prefs.profile === "roads" ? "active" : ""} onClick={() => updatePrefs({ profile: "roads" })}>
-                    🏙️ Routes & chemins
+                    Routes et chemins
                   </button>
                 </div>
               )}
@@ -931,7 +1070,9 @@ export default function App() {
                   <Waypoints size={18} />
                 </span>
                 <span className="switch-text">
-                  <b>Ne jamais repasser au même endroit</b>
+                  <b>
+                    Ne jamais repasser au même endroit {!plan.isPro && <span className="pro-pill">PRO</span>}
+                  </b>
                   <small>Chaque nouveau segment évite les chemins déjà empruntés</small>
                 </span>
                 <span className="switch">
@@ -942,7 +1083,7 @@ export default function App() {
                 <div className="alert warn">
                   <Repeat size={15} />
                   <span>
-                    {formatDistance(overlaps.length)} parcourus deux fois (en jaune sur la carte).
+                    {formatDistance(overlaps.length)} parcourus deux fois, surlignés sur la carte.
                     {!prefs.avoid && (
                       <button className="link" onClick={toggleAvoid}>
                         Éviter
@@ -979,13 +1120,14 @@ export default function App() {
                     title={POI_TYPES[t].label}
                     onClick={() => setPlacing((cur) => (cur === t ? null : t))}
                   >
-                    {POI_TYPES[t].emoji}
+                    <PoiIcon type={t} size={17} />
                   </button>
                 ))}
               </div>
               <button className="secondary osm-btn" onClick={findOsmPois} disabled={osmLoading || track.length < 2}>
                 {osmLoading ? <span className="spinner" /> : <Compass size={16} />}
                 Trouver eau, refuges & sommets sur le parcours
+                {!plan.isPro && <span className="pro-pill">PRO</span>}
               </button>
               {osmPois.length > 0 && (
                 <p className="muted small">
@@ -1000,33 +1142,29 @@ export default function App() {
             <div className="block loop-card">
               <div className="block-head">
                 <span>
-                  <Sparkles size={14} /> Générer une boucle
+                  <Sparkles size={14} /> Boucle automatique
                 </span>
                 <b>{loopKm} km</b>
               </div>
               <input type="range" min={2} max={activity === "run" ? 42 : 35} step={1} value={loopKm} onChange={(e) => setLoopKm(+e.target.value)} />
-              <div className="row">
-                <button
-                  className="secondary"
-                  disabled={loop != null}
-                  onClick={() => generateLoop({ target: loopKm * 1000, bearing: Math.random() * 360, k: 0.8, attempts: 0 })}
-                >
-                  {loop ? <span className="spinner" /> : <Sparkles size={16} />} Générer
-                </button>
-                <button
-                  className="secondary"
-                  disabled={loop != null || waypoints.length < 2}
-                  onClick={() => generateLoop({ target: loopKm * 1000, bearing: Math.random() * 360, k: 0.8, attempts: 0 })}
-                  title="Une autre direction depuis le même départ"
-                >
-                  <Shuffle size={16} /> Autre idée
-                </button>
-              </div>
+              <button
+                className="secondary wide"
+                disabled={loop != null}
+                onClick={() => {
+                  if (needPro("loop")) return;
+                  generateLoop({ target: loopKm * 1000, bearing: Math.random() * 360, k: 0.8, attempts: 0 });
+                }}
+              >
+                {loop ? <span className="spinner" /> : <Sparkles size={16} />}
+                {waypoints.length > 1 ? "Générer une autre boucle" : "Générer la boucle"}
+                {!plan.isPro && <span className="pro-pill">PRO</span>}
+              </button>
               <p className="muted small">Depuis votre point de départ (ou le centre de la carte), sans repasser par les mêmes chemins.</p>
             </div>
 
             <div className="block">
-              <div className="chips formats">
+              <div className="chips">
+                <span>Format GPX</span>
                 {(Object.keys(EXPORT_FORMATS) as ExportFormat[]).map((f) => (
                   <button
                     key={f}
@@ -1039,11 +1177,20 @@ export default function App() {
                 ))}
               </div>
               <button className="primary" onClick={exportRoute} disabled={track.length < 2}>
-                <Download size={18} /> Exporter en {EXPORT_FORMATS[prefs.exportFormat].label}
+                <Download size={18} /> Exporter le GPX
               </button>
               <label className="check">
-                <input type="checkbox" checked={withTimes} onChange={(e) => setWithTimes(e.target.checked)} />
-                <span>Inclure les horaires estimés (partenaire virtuel montre)</span>
+                <input
+                  type="checkbox"
+                  checked={withTimes && plan.isPro}
+                  onChange={(e) => {
+                    if (e.target.checked && needPro("times")) return;
+                    setWithTimes(e.target.checked);
+                  }}
+                />
+                <span>
+                  Inclure les horaires estimés (partenaire virtuel montre) {!plan.isPro && <span className="pro-pill">PRO</span>}
+                </span>
               </label>
               <div className="row three">
                 <button className="secondary" onClick={saveToLibrary}>
@@ -1060,7 +1207,34 @@ export default function App() {
           </>
         )}
 
-        {tab === "plan" && (
+        {tab === "explore" && (
+          <Explorer
+            map={mapRef.current}
+            previewId={preview?.trail.id ?? null}
+            onPreview={(trail, line) => setPreview({ trail, line })}
+            onUse={loadTrail}
+            onError={(m) => toast(m, "error")}
+          />
+        )}
+
+        {tab === "plan" && !plan.isPro && (
+          <div className="block teaser">
+            <span className="pro-pill big">PRO</span>
+            <h3>{PRO_FEATURES.planner.title}</h3>
+            <ul>
+              <li>Météo heure par heure pendant votre sortie</li>
+              <li>Heure d'arrivée et alerte coucher du soleil</li>
+              <li>Temps de passage kilomètre par kilomètre</li>
+              <li>Objectif de temps → allure à tenir</li>
+              <li>Eau et nourriture à emporter</li>
+            </ul>
+            <button className="primary" onClick={() => setUpgrade({ feature: "planner" })}>
+              {plan.trialUsed ? "Débloquer avec Pro" : "Essayer gratuitement 14 jours"}
+            </button>
+          </div>
+        )}
+
+        {tab === "plan" && plan.isPro && (
           <Planner
             activity={activity}
             start={prefs.start}
@@ -1074,7 +1248,7 @@ export default function App() {
             }}
             onApplySpeed={(hikeSpeed) => {
               updatePrefs({ hikeSpeed });
-              toast(`Vitesse réglée sur ${hikeSpeed.toFixed(1)} km/h`, "success");
+              toast(`Vitesse réglée sur ${hikeSpeed.toFixed(1).replace(".", ",")} km/h`, "success");
             }}
             startPoint={waypoints[0] ?? null}
             splits={splits}
@@ -1098,6 +1272,28 @@ export default function App() {
                 <Save size={16} /> Enregistrer
               </button>
             </div>
+            {cloud && localLibrary.length > 0 && (
+              <button className="secondary wide" onClick={importLocalRoutes}>
+                Ajouter à mon compte les {localLibrary.length} parcours de cet appareil
+              </button>
+            )}
+            {account.enabled && !cloud && (
+              <p className="muted small">
+                Parcours enregistrés sur cet appareil.{" "}
+                <button className="link" onClick={() => setAccountOpen({ reason: null })}>
+                  Connectez-vous
+                </button>{" "}
+                pour les retrouver partout.
+              </p>
+            )}
+            {!plan.isPro && (
+              <p className="muted small">
+                {library.length}/{FREE_ROUTE_LIMIT} parcours enregistrés avec l'offre gratuite.{" "}
+                <button className="link" onClick={() => setUpgrade({ feature: "library" })}>
+                  Illimité avec Pro
+                </button>
+              </p>
+            )}
             {library.length === 0 ? (
               <p className="muted">Vos parcours enregistrés apparaîtront ici.</p>
             ) : (
@@ -1154,8 +1350,15 @@ export default function App() {
           {layersOpen && (
             <div className="panel layers-menu">
               {Object.entries(BASE_LAYERS).map(([k, l]) => (
-                <button key={k} className={`layer-opt ${prefs.baseLayer === k ? "active" : ""}`} onClick={() => updatePrefs({ baseLayer: k })}>
-                  <span className={`thumb thumb-${k}`} />
+                <button
+                  key={k}
+                  className={`layer-opt ${baseLayer === k ? "active" : ""}`}
+                  onClick={() => {
+                    if (PRO_LAYERS.includes(k) && needPro("maps")) return;
+                    updatePrefs({ baseLayer: k });
+                  }}
+                >
+                  <span className={`thumb thumb-${k}`}>{PRO_LAYERS.includes(k) && !plan.isPro && <span className="pro-pill">PRO</span>}</span>
                   {l.label}
                 </button>
               ))}
@@ -1164,12 +1367,20 @@ export default function App() {
                 <span>Sentiers balisés</span>
               </label>
               <label className="check">
-                <input type="checkbox" checked={prefs.hillshade} onChange={(e) => updatePrefs({ hillshade: e.target.checked })} />
-                <span>Relief ombré</span>
+                <input
+                  type="checkbox"
+                  checked={hillshade}
+                  onChange={(e) => (e.target.checked && needPro("maps") ? null : updatePrefs({ hillshade: e.target.checked }))}
+                />
+                <span>Relief ombré {!plan.isPro && <span className="pro-pill">PRO</span>}</span>
               </label>
               <label className="check">
-                <input type="checkbox" checked={prefs.slopeColors} onChange={(e) => updatePrefs({ slopeColors: e.target.checked })} />
-                <span>Colorer le tracé selon la pente</span>
+                <input
+                  type="checkbox"
+                  checked={slopeColorsOn}
+                  onChange={(e) => (e.target.checked && needPro("maps") ? null : updatePrefs({ slopeColors: e.target.checked }))}
+                />
+                <span>Colorer le tracé selon la pente {!plan.isPro && <span className="pro-pill">PRO</span>}</span>
               </label>
             </div>
           )}
@@ -1210,16 +1421,12 @@ export default function App() {
             </div>
           </div>
           <div className="legend">
-            <i style={{ background: "#34d399" }} />
-            &lt;3%
-            <i style={{ background: "#facc15" }} />
-            &lt;7%
-            <i style={{ background: "#fb923c" }} />
-            &lt;12%
-            <i style={{ background: "#f43f5e" }} />
-            &lt;20%
-            <i style={{ background: "#a855f7" }} />
-            20%+
+            {[1, 5, 10, 15, 25].map((v, i) => (
+              <span key={v} className="legend-item">
+                <i style={{ background: slopeColor(v) }} />
+                {["< 3 %", "< 7 %", "< 12 %", "< 20 %", "20 % +"].at(i)}
+              </span>
+            ))}
           </div>
         </div>
         <ElevationChart
@@ -1236,11 +1443,12 @@ export default function App() {
 
       {placing ? (
         <div className="hint panel">
-          <span className="hint-emoji">{POI_TYPES[placing].emoji}</span>
+          <PoiIcon type={placing} size={16} />
           Cliquez sur la carte pour placer « {POI_TYPES[placing].label} » · Échap pour annuler
         </div>
       ) : (
-        waypoints.length === 0 && (
+        waypoints.length === 0 &&
+        !preview && (
           <div className="hint panel">
             <span className="pulse" />
             Cliquez sur la carte pour placer votre départ — ou générez une boucle
@@ -1252,7 +1460,7 @@ export default function App() {
         <div className="replay-hud panel">
           <div>
             <span className="label">Distance</span>
-            <b>{(replay.d / 1000).toFixed(2)} km</b>
+            <b>{(replay.d / 1000).toFixed(2).replace(".", ",")} km</b>
           </div>
           <div>
             <span className="label">Altitude</span>
@@ -1279,6 +1487,37 @@ export default function App() {
       )}
 
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+
+      {accountOpen && (
+        <AccountModal
+          account={account}
+          plan={plan}
+          reason={accountOpen.reason}
+          onUpgrade={() => {
+            setAccountOpen(null);
+            setUpgrade({ feature: null });
+          }}
+          onClose={() => setAccountOpen(null)}
+        />
+      )}
+
+      {upgrade && (
+        <UpgradeModal
+          feature={upgrade.feature}
+          trialUsed={plan.trialUsed}
+          onStartTrial={async () => {
+            const r = await plan.startTrial();
+            if (r.ok) toast("Essai Pro activé pour 14 jours — profitez-en !", "success");
+            return r;
+          }}
+          onCheckout={plan.checkout}
+          onNeedAccount={(reason) => {
+            setUpgrade(null);
+            setAccountOpen({ reason });
+          }}
+          onClose={() => setUpgrade(null)}
+        />
+      )}
 
       <div className="toasts">
         {toasts.map((t) => (
@@ -1349,7 +1588,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
         </ul>
         <p className="muted small">
           Le profil altimétrique est cliquable : il centre la carte sur le point survolé. Les sections parcourues deux fois sont
-          surlignées en jaune sur la carte et sur le profil.
+          surlignées sur la carte et sur le profil.
         </p>
       </div>
     </div>
