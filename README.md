@@ -13,6 +13,13 @@ Dashboard moderne pour **tracer, analyser et exporter des traces GPX** de course
 - 🔁 Boucler vers le départ, aller-retour, inverser le sens, annuler / rétablir (Ctrl+Z / Ctrl+Y)
 - 📍 **Repères** (point d'eau, ravito, sommet, point de vue, danger, parking, note) affichés sur la carte et le profil, exportés en waypoints
 - 🗓️ **Planification** : heure de départ et d'arrivée, **météo heure par heure** sur le parcours, alerte coucher du soleil, **temps de passage** au km
+- 🎯 **Objectif de temps** → allure (ou vitesse) nécessaire, applicable en un clic
+- 🎒 **Dans le sac** : eau et glucides conseillés selon la durée et la chaleur prévue
+- 🧭 **Points utiles OpenStreetMap** autour du parcours (eau, refuges, abris, sommets, points de vue) ajoutables en repères
+- ▶️ **Survol animé** du parcours (style Relive) avec distance, altitude et temps
+- 🖼️ **Image à partager** (format story) avec le tracé, le profil et les stats
+- 🗺️ Fonds **IGN Plan** et **IGN Photo**, **relief ombré**, tracé **coloré selon la pente**
+- 📥 Import par **glisser-déposer** d'un fichier GPX
 - 🏷️ Difficulté, calories estimées, raccourcis clavier (touche `?`)
 - 📈 **Profil altimétrique** coloré selon la pente, synchronisé avec la carte au survol
 - 📊 Distance, D+, D-, altitude max, pente max, **durée estimée** (km-effort pour la course, DIN 33466 pour la rando)
@@ -36,7 +43,9 @@ npm run build    # build de production dans dist/
 | Routage sentiers + évitement | [BRouter](https://brouter.de) (profil hiking-mountain, zones nogo) |
 | Routage routes & chemins | [routing.openstreetmap.de](https://routing.openstreetmap.de) (OSRM, profil foot) |
 | Météo | [Open-Meteo Forecast API](https://open-meteo.com/en/docs) |
-| Altitudes | [Open-Meteo Elevation API](https://open-meteo.com/en/docs/elevation-api) (Copernicus DEM 90 m) |
+| Altitudes | Tuiles [Terrarium](https://registry.opendata.aws/terrain-tiles/) (AWS Open Data), secours : Open-Meteo Elevation |
+| Points utiles | [Overpass API](https://overpass-api.de) (OpenStreetMap) |
+| Fonds IGN | [Géoplateforme IGN](https://geoservices.ign.fr) |
 | Recherche | [Nominatim](https://nominatim.openstreetmap.org) |
 | Fonds de carte | OpenTopoMap, CARTO, Esri World Imagery, Waymarked Trails |
 

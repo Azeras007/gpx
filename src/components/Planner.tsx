@@ -1,6 +1,21 @@
 import { useEffect, useState } from "react";
-import { Cloud, CloudFog, CloudLightning, CloudRain, CloudSnow, CloudSun, Sun, Sunset, Trash2, Wind } from "lucide-react";
-import { formatDuration, POI_TYPES, type Poi, type Split } from "../lib/geo";
+import {
+  Cloud,
+  CloudFog,
+  CloudLightning,
+  CloudRain,
+  CloudSnow,
+  CloudSun,
+  Droplets,
+  RotateCw,
+  Sun,
+  Sunset,
+  Target,
+  Trash2,
+  Utensils,
+  Wind,
+} from "lucide-react";
+import { formatDuration, formatPace, POI_TYPES, type Activity, type Poi, type Split } from "../lib/geo";
 import { fetchWeather, type Weather } from "../lib/services";
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -20,9 +35,14 @@ function WeatherIcon({ code, size = 18 }: { code: number; size?: number }) {
 }
 
 interface Props {
+  activity: Activity;
   start: string;
   onStartChange: (v: string) => void;
   duration: number;
+  runPace: number;
+  hikeSpeed: number;
+  onApplyPace: (runPace: number) => void;
+  onApplySpeed: (hikeSpeed: number) => void;
   startPoint: { lat: number; lng: number } | null;
   splits: Split[];
   pois: (Poi & { d: number | null })[];
@@ -31,59 +51,73 @@ interface Props {
   onFocusPoi: (p: Poi) => void;
   weight: number;
   onWeightChange: (v: number) => void;
+  kcal: number;
 }
 
 export default function Planner(p: Props) {
   const [weather, setWeather] = useState<Weather | null>(null);
-  const [weatherError, setWeatherError] = useState(false);
+  const [weatherError, setWeatherError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  const [target, setTarget] = useState("");
   const startDate = p.start ? new Date(p.start) : null;
   const endDate = startDate ? new Date(startDate.getTime() + p.duration * 1000) : null;
   const daysAhead = startDate ? (startDate.getTime() - Date.now()) / 86400000 : 0;
   const forecastable = startDate != null && daysAhead > -1 && daysAhead < 15;
-  const lat = p.startPoint?.lat;
-  const lng = p.startPoint?.lng;
-  const endDay = endDate ? p.start.slice(0, 10) === toLocalInput(endDate).slice(0, 10) ? p.start.slice(0, 10) : toLocalInput(endDate).slice(0, 10) : "";
+  const lat = p.startPoint ? +p.startPoint.lat.toFixed(2) : null;
+  const lng = p.startPoint ? +p.startPoint.lng.toFixed(2) : null;
 
   useEffect(() => {
-    setWeather(null);
-    setWeatherError(false);
+    setWeatherError(null);
     if (!forecastable || lat == null || lng == null) return;
-    const ctrl = new AbortController();
-    const t = setTimeout(() => {
-      fetchWeather(lat, lng, p.start.slice(0, 10), endDay, ctrl.signal)
-        .then(setWeather)
-        .catch((e) => e.name !== "AbortError" && setWeatherError(true));
-    }, 500);
+    let alive = true;
+    setWeather(null);
+    fetchWeather(lat, lng)
+      .then((w) => alive && setWeather(w))
+      .catch((e) => alive && setWeatherError((e as Error).message || "Erreur réseau"));
     return () => {
-      clearTimeout(t);
-      ctrl.abort();
+      alive = false;
     };
-    // Coordinates are rounded so small edits of the start point do not refetch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [forecastable, lat?.toFixed(2), lng?.toFixed(2), p.start.slice(0, 13), endDay]);
+  }, [forecastable, lat, lng, retry]);
 
-  // Forecast hours that cover the outing (at most 8 cards).
+  // Forecast hours covering the outing (at most 8 cards).
   const hours = (() => {
     if (!weather || !startDate || !endDate) return [];
     const from = p.start.slice(0, 13);
     const to = toLocalInput(endDate).slice(0, 13);
     const inRange = weather.hours.filter((h) => h.time.slice(0, 13) >= from && h.time.slice(0, 13) <= to);
-    const every = Math.ceil(inRange.length / 8);
+    const every = Math.ceil(inRange.length / 8) || 1;
     return inRange.filter((_, i) => i % every === 0);
   })();
-  const sunset = weather ? new Date(weather.sunset) : null;
-  const lateFinish = sunset && endDate && endDate > sunset;
+  const day = weather?.days.find((d) => d.date === p.start.slice(0, 10));
+  const sunset = day ? new Date(day.sunset) : null;
+  const lateFinish = sunset && endDate && endDate > sunset && startDate! < sunset;
+  const maxTemp = hours.length ? Math.max(...hours.map((h) => h.temp)) : null;
+  const maxRain = hours.length ? Math.max(...hours.map((h) => h.rain)) : 0;
+
+  // Water & food: ~0.5 L/h walking, 0.6 L/h running, more when it is hot.
+  const hoursOut = p.duration / 3600;
+  const heat = maxTemp == null ? 0 : maxTemp > 28 ? 0.35 : maxTemp > 22 ? 0.2 : 0;
+  const water = hoursOut * ((p.activity === "run" ? 0.6 : 0.5) + heat);
+  const carbs = hoursOut > (p.activity === "run" ? 1.25 : 2) ? hoursOut * (p.activity === "run" ? 50 : 35) : 0;
+
+  // Target time → flat pace / speed needed, using the same effort model as the estimate.
+  const targetSec = (() => {
+    const m = target.match(/^(\d{1,2})(?:[:h](\d{1,2}))?$/);
+    if (!m) return null;
+    return (+m[1] * 60 + (m[2] ? +m[2] : 0)) * 60;
+  })();
+  const ratio = targetSec && p.duration ? targetSec / p.duration : null;
+  const neededPace = ratio ? p.runPace * ratio : null;
+  const neededSpeed = ratio ? p.hikeSpeed / ratio : null;
 
   return (
     <>
       <div className="block">
         <div className="block-head">
           <span>Départ prévu</span>
-          {!p.start && (
-            <button className="link" onClick={() => p.onStartChange(toLocalInput(new Date(Math.ceil(Date.now() / 900000) * 900000)))}>
-              Maintenant
-            </button>
-          )}
+          <button className="link" onClick={() => p.onStartChange(toLocalInput(new Date(Math.ceil(Date.now() / 900000) * 900000)))}>
+            Maintenant
+          </button>
         </div>
         <input type="datetime-local" className="field" value={p.start} onChange={(e) => p.onStartChange(e.target.value)} />
         {startDate && endDate && (
@@ -108,13 +142,54 @@ export default function Planner(p: Props) {
         )}
       </div>
 
+      <div className="block">
+        <div className="block-head">
+          <span>
+            <Target size={14} /> Objectif de temps
+          </span>
+        </div>
+        <div className="field-row">
+          <input
+            className="field"
+            placeholder="ex. 1:45 ou 5h30"
+            value={target}
+            onChange={(e) => setTarget(e.target.value.trim())}
+            inputMode="numeric"
+          />
+          {ratio && (
+            <button
+              className="secondary"
+              onClick={() => (p.activity === "run" ? p.onApplyPace(neededPace!) : p.onApplySpeed(neededSpeed!))}
+              disabled={p.activity === "run" ? neededPace! < 2.5 || neededPace! > 15 : neededSpeed! < 1 || neededSpeed! > 9}
+            >
+              Appliquer
+            </button>
+          )}
+        </div>
+        {ratio && (
+          <p className="target-result">
+            {p.activity === "run" ? (
+              <>
+                Allure sur le plat nécessaire : <b>{formatPace(neededPace!)} /km</b>
+                {neededPace! < 2.5 && " — irréaliste 😅"}
+              </>
+            ) : (
+              <>
+                Vitesse de marche nécessaire : <b>{neededSpeed!.toFixed(1)} km/h</b>
+                {neededSpeed! > 7 && " — très ambitieux"}
+              </>
+            )}
+          </p>
+        )}
+      </div>
+
       {startDate && (
         <div className="block">
           <div className="block-head">
             <span>Météo sur le parcours</span>
-            {weather && (
+            {day && (
               <span className="sun">
-                <Sun size={13} /> {weather.sunrise.slice(11)} · <Sunset size={13} /> {weather.sunset.slice(11)}
+                <Sun size={13} /> {day.sunrise.slice(11)} · <Sunset size={13} /> {day.sunset.slice(11)}
               </span>
             )}
           </div>
@@ -123,28 +198,80 @@ export default function Planner(p: Props) {
           ) : !forecastable ? (
             <p className="muted">Prévisions disponibles jusqu'à 15 jours à l'avance.</p>
           ) : weatherError ? (
-            <p className="muted">Météo indisponible pour le moment.</p>
+            <div className="alert">
+              <CloudRain size={16} />
+              <span>
+                Météo indisponible ({weatherError}).
+                <button className="link" onClick={() => setRetry((r) => r + 1)}>
+                  <RotateCw size={12} /> Réessayer
+                </button>
+              </span>
+            </div>
           ) : !weather ? (
             <p className="muted">
               <span className="spinner" /> Chargement des prévisions…
             </p>
+          ) : hours.length === 0 ? (
+            <p className="muted">Pas de prévision pour ce créneau.</p>
           ) : (
-            <div className="weather">
-              {hours.map((h) => (
-                <div key={h.time} className="hour">
-                  <span>{h.time.slice(11, 13)}h</span>
-                  <WeatherIcon code={h.code} />
-                  <b>{Math.round(h.temp)}°</b>
-                  <small className={h.rain >= 40 ? "rainy" : ""}>{h.rain}%</small>
-                  <small>
-                    <Wind size={10} /> {Math.round(h.wind)}
-                  </small>
-                </div>
-              ))}
-            </div>
+            <>
+              <div className="weather">
+                {hours.map((h) => (
+                  <div key={h.time} className="hour">
+                    <span>{h.time.slice(11, 13)}h</span>
+                    <WeatherIcon code={h.code} />
+                    <b>{Math.round(h.temp)}°</b>
+                    <small className={h.rain >= 40 ? "rainy" : ""}>
+                      <Droplets size={10} /> {h.rain}%
+                    </small>
+                    <small>
+                      <Wind size={10} /> {Math.round(h.wind)}
+                    </small>
+                  </div>
+                ))}
+              </div>
+              {maxRain >= 50 && <p className="muted small">☔ Pluie probable — prenez une veste imperméable.</p>}
+            </>
           )}
         </div>
       )}
+
+      <div className="block">
+        <div className="block-head">
+          <span>Dans le sac</span>
+        </div>
+        <div className="bag">
+          <div>
+            <Droplets size={18} />
+            <b>{p.duration ? `${String(Math.max(0.25, Math.ceil(water * 4) / 4)).replace(".", ",")} L` : "—"}</b>
+            <span>d'eau{heat ? " (chaleur)" : ""}</span>
+          </div>
+          <div>
+            <Utensils size={18} />
+            <b>{carbs ? `${Math.round(carbs / 10) * 10} g` : "—"}</b>
+            <span>{carbs ? `glucides ≈ ${Math.ceil(carbs / 25)} ${p.activity === "run" ? "gels" : "barres"}` : "pas de ravito nécessaire"}</span>
+          </div>
+          <div>
+            <span className="kcal">🔥</span>
+            <b>{Math.round(p.kcal)}</b>
+            <span>kcal dépensées</span>
+          </div>
+        </div>
+        <label className="inline-field">
+          <span>Votre poids</span>
+          <input
+            type="number"
+            min={30}
+            max={200}
+            value={p.weight}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              if (isFinite(v) && v > 0) p.onWeightChange(v);
+            }}
+          />
+          <span>kg</span>
+        </label>
+      </div>
 
       <div className="block">
         <div className="block-head">
@@ -164,7 +291,7 @@ export default function Planner(p: Props) {
             </div>
             {p.splits.map((s) => (
               <div key={s.km} className="split">
-                <span>{s.length < 999 ? (s.km - 1 + s.length / 1000).toFixed(1) : s.km}</span>
+                <span>{Math.abs(s.length - 1000) < 1 ? s.km : (s.km - 1 + s.length / 1000).toFixed(2)}</span>
                 <span className="up">{Math.round(s.gain)}</span>
                 <span className="down">{Math.round(s.loss)}</span>
                 <span>{formatSplit(s.time)}</span>
@@ -184,28 +311,22 @@ export default function Planner(p: Props) {
           <p className="muted">Ajoutez des points d'eau, ravitos ou sommets depuis l'onglet Tracer. Ils sont exportés dans le GPX.</p>
         ) : (
           <ul className="poi-list">
-            {p.pois.map((poi) => (
-              <li key={poi.id}>
-                <button className="poi-emoji" onClick={() => p.onFocusPoi(poi)} title="Centrer la carte">
-                  {POI_TYPES[poi.type].emoji}
-                </button>
-                <input value={poi.name} onChange={(e) => p.onRenamePoi(poi.id, e.target.value)} />
-                <span>{poi.d != null ? `km ${(poi.d / 1000).toFixed(1)}` : "hors tracé"}</span>
-                <button className="icon-btn ghost" onClick={() => p.onRemovePoi(poi.id)} title="Supprimer">
-                  <Trash2 size={14} />
-                </button>
-              </li>
-            ))}
+            {[...p.pois]
+              .sort((a, b) => (a.d ?? Infinity) - (b.d ?? Infinity))
+              .map((poi) => (
+                <li key={poi.id}>
+                  <button className="poi-emoji" onClick={() => p.onFocusPoi(poi)} title="Centrer la carte">
+                    {POI_TYPES[poi.type].emoji}
+                  </button>
+                  <input value={poi.name} onChange={(e) => p.onRenamePoi(poi.id, e.target.value)} />
+                  <span>{poi.d != null ? `km ${(poi.d / 1000).toFixed(1)}` : "hors tracé"}</span>
+                  <button className="icon-btn ghost" onClick={() => p.onRemovePoi(poi.id)} title="Supprimer">
+                    <Trash2 size={14} />
+                  </button>
+                </li>
+              ))}
           </ul>
         )}
-      </div>
-
-      <div className="block">
-        <div className="block-head">
-          <span>Poids (calories)</span>
-          <b>{p.weight} kg</b>
-        </div>
-        <input type="range" min={40} max={120} step={1} value={p.weight} onChange={(e) => p.onWeightChange(+e.target.value)} />
       </div>
     </>
   );

@@ -2,6 +2,16 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { POI_TYPES, type LatLng, type Poi, type Waypoint } from "../lib/geo";
+import type { OsmPoi } from "../lib/services";
+
+export const OSM_KINDS: Record<OsmPoi["kind"], { label: string; emoji: string }> = {
+  water: { label: "Point d'eau", emoji: "💧" },
+  hut: { label: "Refuge", emoji: "🛖" },
+  shelter: { label: "Abri", emoji: "⛺" },
+  peak: { label: "Sommet", emoji: "⛰️" },
+  view: { label: "Point de vue", emoji: "📷" },
+  toilets: { label: "Toilettes", emoji: "🚻" },
+};
 
 export const BASE_LAYERS: Record<string, { label: string; url: string; attribution: string; maxZoom: number }> = {
   topo: {
@@ -22,6 +32,18 @@ export const BASE_LAYERS: Record<string, { label: string; url: string; attributi
     attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
     maxZoom: 19,
   },
+  ignplan: {
+    label: "IGN Plan",
+    url: "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&FORMAT=image/png&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}",
+    attribution: '© <a href="https://www.ign.fr">IGN</a>',
+    maxZoom: 19,
+  },
+  ignortho: {
+    label: "IGN Photo",
+    url: "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&FORMAT=image/jpeg&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}",
+    attribution: '© <a href="https://www.ign.fr">IGN</a>',
+    maxZoom: 19,
+  },
   dark: {
     label: "Nuit",
     url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
@@ -37,6 +59,12 @@ interface Props {
   accent: string;
   baseLayer: string;
   trails: boolean;
+  hillshade: boolean;
+  /** Route drawn in slope colors instead of the accent color. */
+  slopeLines: { color: string; coords: LatLng[] }[] | null;
+  osmPois: OsmPoi[];
+  /** Part of the route already covered by the replay animation. */
+  replayTrail: LatLng[] | null;
   hover: LatLng | null;
   kmMarks: { pos: LatLng; km: number }[];
   overlaps: LatLng[][];
@@ -51,6 +79,8 @@ interface Props {
   onRemove: (id: string) => void;
   onStartClick: () => void;
   onMovePoi: (id: string, p: LatLng) => void;
+  onAddOsmPoi: (p: OsmPoi) => void;
+  onRouteHover: (p: LatLng | null) => void;
   onRemovePoi: (id: string) => void;
   onViewChange: (v: { lat: number; lng: number; zoom: number }) => void;
 }
@@ -64,6 +94,10 @@ export default function MapView(props: Props) {
   const markerGroup = useRef<L.LayerGroup | null>(null);
   const kmGroup = useRef<L.LayerGroup | null>(null);
   const overlapGroup = useRef<L.LayerGroup | null>(null);
+  const slopeGroup = useRef<L.LayerGroup | null>(null);
+  const osmGroup = useRef<L.LayerGroup | null>(null);
+  const replayLine = useRef<L.Polyline | null>(null);
+  const hillLayer = useRef<L.TileLayer | null>(null);
   const poiGroup = useRef<L.LayerGroup | null>(null);
   const hoverMarker = useRef<L.CircleMarker | null>(null);
   const legLines = useRef<{ casing: L.Polyline; line: L.Polyline }[]>([]);
@@ -86,7 +120,9 @@ export default function MapView(props: Props) {
     L.control.scale({ position: "bottomright", imperial: false }).addTo(m);
     m.attributionControl.setPrefix(false);
     legGroup.current = L.layerGroup().addTo(m);
+    slopeGroup.current = L.layerGroup().addTo(m);
     overlapGroup.current = L.layerGroup().addTo(m);
+    osmGroup.current = L.layerGroup().addTo(m);
     kmGroup.current = L.layerGroup().addTo(m);
     markerGroup.current = L.layerGroup().addTo(m);
     poiGroup.current = L.layerGroup().addTo(m);
@@ -162,7 +198,11 @@ export default function MapView(props: Props) {
       L.polyline(leg, { weight: 18, opacity: 0, bubblingMouseEvents: false })
         .on("click", (e: L.LeafletMouseEvent) => cb.current.onInsert(i + 1, [e.latlng.lat, e.latlng.lng]))
         .on("mouseover", () => line.setStyle({ weight: 7 }))
-        .on("mouseout", () => line.setStyle({ weight: 5 }))
+        .on("mousemove", (e: L.LeafletMouseEvent) => cb.current.onRouteHover([e.latlng.lat, e.latlng.lng]))
+        .on("mouseout", () => {
+          line.setStyle({ weight: 5 });
+          cb.current.onRouteHover(null);
+        })
         .addTo(g);
       return { casing, line };
     });
@@ -232,6 +272,67 @@ export default function MapView(props: Props) {
       }).addTo(g);
     });
   }, [props.kmMarks]);
+
+  // Shaded relief, blended over the base map
+  useEffect(() => {
+    const m = map.current!;
+    hillLayer.current?.remove();
+    hillLayer.current = null;
+    if (props.hillshade) {
+      hillLayer.current = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}", {
+        attribution: "Relief © Esri",
+        maxZoom: 19,
+        maxNativeZoom: 16,
+        opacity: 0.45,
+        className: "hillshade",
+      }).addTo(m);
+    }
+  }, [props.hillshade]);
+
+  // Slope-colored route
+  useEffect(() => {
+    const g = slopeGroup.current!;
+    g.clearLayers();
+    el.current!.classList.toggle("slope-mode", !!props.slopeLines);
+    props.slopeLines?.forEach(({ color, coords }) =>
+      L.polyline(coords, { color, weight: 6, lineCap: "round", lineJoin: "round", interactive: false }).addTo(g),
+    );
+  }, [props.slopeLines, props.legs]);
+
+  // Replay trail
+  useEffect(() => {
+    const m = map.current!;
+    if (!props.replayTrail) {
+      replayLine.current?.remove();
+      replayLine.current = null;
+      return;
+    }
+    if (!replayLine.current) {
+      replayLine.current = L.polyline([], { color: "#ffffff", weight: 4, opacity: 0.95, interactive: false, className: "replay-line" }).addTo(m);
+    }
+    replayLine.current.setLatLngs(props.replayTrail);
+  }, [props.replayTrail]);
+
+  // Amenities found on OpenStreetMap
+  useEffect(() => {
+    const g = osmGroup.current!;
+    g.clearLayers();
+    props.osmPois.forEach((p) => {
+      const k = OSM_KINDS[p.kind];
+      const mk = L.marker([p.lat, p.lng], {
+        icon: L.divIcon({ className: "", html: `<div class="osm-poi">${k.emoji}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] }),
+        zIndexOffset: 500,
+      });
+      const title = (p.name || k.label).replace(/[<>&]/g, "");
+      mk.bindTooltip(`${title}${p.ele ? ` · ${Math.round(p.ele)} m` : ""}<br><span>${k.label} · clic pour l'ajouter aux repères</span>`, {
+        direction: "top",
+        offset: [0, -14],
+        className: "wp-tip",
+      });
+      mk.on("click", () => cb.current.onAddOsmPoi(p));
+      mk.addTo(g);
+    });
+  }, [props.osmPois]);
 
   // Sections where the route passes again over itself
   useEffect(() => {

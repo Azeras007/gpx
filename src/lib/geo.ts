@@ -13,7 +13,7 @@ export interface Waypoint {
   avoid?: boolean;
 }
 
-export type PoiType = "water" | "food" | "summit" | "view" | "danger" | "parking" | "note";
+export type PoiType = "water" | "food" | "hut" | "summit" | "view" | "danger" | "parking" | "note";
 
 export interface Poi {
   id: string;
@@ -26,6 +26,7 @@ export interface Poi {
 export const POI_TYPES: Record<PoiType, { label: string; emoji: string; sym: string }> = {
   water: { label: "Point d'eau", emoji: "💧", sym: "Drinking Water" },
   food: { label: "Ravitaillement", emoji: "🍎", sym: "Restaurant" },
+  hut: { label: "Refuge", emoji: "🛖", sym: "Lodge" },
   summit: { label: "Sommet", emoji: "⛰️", sym: "Summit" },
   view: { label: "Point de vue", emoji: "📷", sym: "Scenic Area" },
   danger: { label: "Danger", emoji: "⚠️", sym: "Danger Area" },
@@ -367,6 +368,16 @@ export function computeSplits(
       elapsed: 0,
     });
   }
+  // A last stub of a few meters reads oddly: fold it into the previous km.
+  const tail = splits[splits.length - 1];
+  if (splits.length > 1 && tail.length < 200) {
+    const prev = splits[splits.length - 2];
+    prev.length += tail.length;
+    prev.gain += tail.gain;
+    prev.loss += tail.loss;
+    prev.time += tail.time;
+    splits.pop();
+  }
   const sum = splits.reduce((a, s) => a + s.time, 0) || 1;
   let acc = 0;
   for (const s of splits) {
@@ -439,6 +450,32 @@ export function decodePolyline(str: string): LatLng[] {
     out.push([lat / 1e5, lng / 1e5]);
   }
   return out;
+}
+
+/** Slope color: green (flat) → amber → red → purple (very steep). */
+export function slopeColor(pct: number) {
+  const a = Math.abs(pct);
+  if (a < 3) return "#34d399";
+  if (a < 7) return "#facc15";
+  if (a < 12) return "#fb923c";
+  if (a < 20) return "#f43f5e";
+  return "#a855f7";
+}
+
+/** Point located `d` meters along the track. */
+export function pointAt(track: LatLng[], cum: number[], d: number): LatLng {
+  if (track.length === 0) return [0, 0];
+  if (d <= 0) return track[0];
+  let lo = 0;
+  let hi = cum.length - 1;
+  if (d >= cum[hi]) return track[hi];
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (cum[mid] <= d) lo = mid;
+    else hi = mid;
+  }
+  const t = (d - cum[lo]) / (cum[hi] - cum[lo] || 1);
+  return [track[lo][0] + (track[hi][0] - track[lo][0]) * t, track[lo][1] + (track[hi][1] - track[lo][1]) * t];
 }
 
 export const uid = () => Math.random().toString(36).slice(2, 10);

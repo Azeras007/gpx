@@ -4,6 +4,7 @@ import {
   ArrowLeftRight,
   ArrowUpDown,
   CalendarClock,
+  Compass,
   Clock,
   Download,
   Flame,
@@ -11,12 +12,14 @@ import {
   FolderOpen,
   Gauge,
   HelpCircle,
+  ImageDown,
   Layers,
   Link2,
   LocateFixed,
   Maximize2,
   Mountain,
   PenLine,
+  Play,
   Redo2,
   Repeat,
   Route,
@@ -26,6 +29,7 @@ import {
   Shuffle,
   Sparkles,
   Spline,
+  Square,
   Trash2,
   TrendingDown,
   TrendingUp,
@@ -34,7 +38,7 @@ import {
   Waypoints,
   X,
 } from "lucide-react";
-import MapView, { BASE_LAYERS } from "./components/MapView";
+import MapView, { BASE_LAYERS, OSM_KINDS } from "./components/MapView";
 import ElevationChart from "./components/ElevationChart";
 import Planner from "./components/Planner";
 import {
@@ -51,10 +55,12 @@ import {
   formatPace,
   haversine,
   locateOnTrack,
+  pointAt,
   POI_TYPES,
   resample,
   sampleEvery,
   simplify,
+  slopeColor,
   uid,
   type Activity,
   type LatLng,
@@ -65,7 +71,8 @@ import {
   type Waypoint,
 } from "./lib/geo";
 import { buildExport, downloadFile, EXPORT_FORMATS, parseGpx, slugify, type ExportFormat } from "./lib/gpx";
-import { fetchElevations, routeLeg, searchPlaces, type Nogo, type Place } from "./lib/services";
+import { fetchElevations, fetchOsmPois, routeLeg, searchPlaces, type Nogo, type OsmPoi, type Place } from "./lib/services";
+import { renderCard } from "./lib/shareImage";
 import { decodeRoute, encodeRoute } from "./lib/share";
 import {
   loadDraft,
@@ -148,6 +155,13 @@ export default function App() {
   const [profile, setProfile] = useState<ProfilePoint[]>([]);
   const [eleLoading, setEleLoading] = useState(false);
   const [hover, setHover] = useState<LatLng | null>(null);
+  /** Distance along the route under the mouse on the map (drives the profile cursor). */
+  const [routeHoverD, setRouteHoverD] = useState<number | null>(null);
+  const [osmPois, setOsmPois] = useState<OsmPoi[]>([]);
+  const [osmLoading, setOsmLoading] = useState(false);
+  const [replay, setReplay] = useState<{ d: number; playing: boolean } | null>(null);
+  const [replaySpeed, setReplaySpeed] = useState(1);
+  const [dragOver, setDragOver] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [withTimes, setWithTimes] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -258,6 +272,7 @@ export default function App() {
   const cum = useMemo(() => cumulative(track), [track]);
   const distance = cum.length ? cum[cum.length - 1] : 0;
   const routing = pendingLegs.some(Boolean);
+  const baseProfile = useMemo(() => resample(track), [track]);
   const overlaps = useMemo(() => (routing ? { length: 0, lines: [], ranges: [] } : findOverlaps(track)), [track, routing]);
 
   // ── Elevation profile (debounced, waits for routing to settle) ─────────────
@@ -270,7 +285,7 @@ export default function App() {
     const ctrl = new AbortController();
     const t = setTimeout(() => {
       setEleLoading(true);
-      fetchElevations(resample(track), ctrl.signal)
+      fetchElevations(baseProfile, ctrl.signal)
         .then(setProfile)
         .catch((e) => {
           if (e.name !== "AbortError") toast("Altitudes indisponibles pour le moment.", "error");
@@ -281,15 +296,22 @@ export default function App() {
       clearTimeout(t);
       ctrl.abort();
     };
-  }, [track, distance, routing, toast]);
+  }, [track, baseProfile, distance, routing, toast]);
 
-  const stats = useMemo(() => computeStats(distance, profile), [distance, profile]);
+  // Elevations arrive a bit after the route changes (or not at all when the
+  // service is down): until then, distances still come from the route itself
+  // so splits and times never go blank.
+  const liveProfile = useMemo(
+    () => (profile.length > 1 && Math.abs(profile[profile.length - 1].d - distance) < 1 ? profile : baseProfile),
+    [profile, baseProfile, distance],
+  );
+  const stats = useMemo(() => computeStats(distance, liveProfile), [distance, liveProfile]);
   const duration = estimateDuration(activity, stats, prefs.runPace, prefs.hikeSpeed);
   const level = difficulty(stats);
   const kcal = calories(activity, stats, prefs.weight);
   const splits = useMemo(
-    () => computeSplits(activity, profile, distance, prefs.runPace, prefs.hikeSpeed, duration),
-    [activity, profile, distance, prefs.runPace, prefs.hikeSpeed, duration],
+    () => computeSplits(activity, liveProfile, distance, prefs.runPace, prefs.hikeSpeed, duration),
+    [activity, liveProfile, distance, prefs.runPace, prefs.hikeSpeed, duration],
   );
 
   const kmMarks = useMemo(() => {
@@ -318,6 +340,99 @@ export default function App() {
       }),
     [pois, track, cum],
   );
+
+  // Route drawn in slope colors (needs elevations)
+  const slopeLines = useMemo(() => {
+    if (!prefs.slopeColors || profile.length < 2 || profile.some((p) => p.ele == null)) return null;
+    const runs: { color: string; coords: LatLng[] }[] = [];
+    for (let i = 1; i < profile.length; i++) {
+      const a = profile[i - 1];
+      const b = profile[i];
+      const color = slopeColor(((b.ele! - a.ele!) / (b.d - a.d || 1)) * 100);
+      // Real path between the two samples, not a straight shortcut
+      const seg: LatLng[] = [[a.lat, a.lng]];
+      for (let j = 0; j < track.length; j++) if (cum[j] > a.d && cum[j] < b.d) seg.push(track[j]);
+      seg.push([b.lat, b.lng]);
+      const last = runs[runs.length - 1];
+      if (last && last.color === color) last.coords.push(...seg.slice(1));
+      else runs.push({ color, coords: seg });
+    }
+    return runs;
+  }, [prefs.slopeColors, profile, track, cum]);
+
+  // ── Replay animation ───────────────────────────────────────────────────────
+  const replayRef = useRef(replay);
+  replayRef.current = replay;
+  useEffect(() => {
+    if (!replay?.playing) return;
+    const total = distance;
+    // Whole route in ~25 s at 1×, whatever its length
+    const speed = (total / 25) * replaySpeed;
+    let last = performance.now();
+    let raf = 0;
+    const tick = (now: number) => {
+      const cur = replayRef.current;
+      if (!cur?.playing) return;
+      const d = Math.min(total, cur.d + ((now - last) / 1000) * speed);
+      last = now;
+      setReplay({ d, playing: d < total });
+      const m = mapRef.current;
+      if (m) m.panTo(pointAt(track, cum, d), { animate: false });
+      if (d < total) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replay?.playing, replaySpeed, track]);
+
+  const startReplay = () => {
+    if (track.length < 2) return;
+    setSheetOpen(false);
+    const m = mapRef.current;
+    if (m && m.getZoom() < 14) m.setView(track[0], 15, { animate: false });
+    setReplay({ d: replay && replay.d < distance ? replay.d : 0, playing: true });
+  };
+  const replayPos = replay ? pointAt(track, cum, replay.d) : null;
+  const replayTrail = useMemo(() => {
+    if (!replay) return null;
+    const out: LatLng[] = [];
+    for (let i = 0; i < track.length && cum[i] < replay.d; i++) out.push(track[i]);
+    out.push(pointAt(track, cum, replay.d));
+    return out;
+  }, [replay, track, cum]);
+  const replayEle = replay ? liveProfile.find((p) => p.d >= replay.d)?.ele ?? null : null;
+
+  // ── OpenStreetMap amenities around the route ───────────────────────────────
+  const findOsmPois = async () => {
+    if (track.length < 2) return toast("Tracez un parcours d'abord.", "error");
+    const lats = track.map((p) => p[0]);
+    const lngs = track.map((p) => p[1]);
+    const pad = 0.004;
+    setOsmLoading(true);
+    try {
+      const found = await fetchOsmPois(Math.min(...lats) - pad, Math.min(...lngs) - pad, Math.max(...lats) + pad, Math.max(...lngs) + pad);
+      const near = found.filter((p) => locateOnTrack(track, cum, [p.lat, p.lng]).off < 300);
+      setOsmPois(near);
+      const count = (k: OsmPoi["kind"]) => near.filter((p) => p.kind === k).length;
+      toast(
+        near.length
+          ? `${count("water")} point(s) d'eau, ${count("hut") + count("shelter")} refuge(s)/abri(s), ${count("peak")} sommet(s) à moins de 300 m`
+          : "Aucun point utile trouvé près du parcours",
+        near.length ? "success" : "info",
+      );
+    } catch {
+      toast("Recherche OpenStreetMap indisponible, réessayez plus tard.", "error");
+    } finally {
+      setOsmLoading(false);
+    }
+  };
+
+  const addOsmPoi = (o: OsmPoi) => {
+    const type: PoiType = o.kind === "water" ? "water" : o.kind === "peak" ? "summit" : o.kind === "view" ? "view" : o.kind === "hut" || o.kind === "shelter" ? "hut" : "note";
+    if (pois.some((p) => Math.abs(p.lat - o.lat) < 1e-6 && Math.abs(p.lng - o.lng) < 1e-6)) return;
+    setPois((l) => [...l, { id: uid(), lat: o.lat, lng: o.lng, type, name: o.name || OSM_KINDS[o.kind].label }]);
+    toast(`« ${o.name || OSM_KINDS[o.kind].label} » ajouté aux repères`, "success");
+  };
 
   // ── Editing actions ────────────────────────────────────────────────────────
   const mk = (p: LatLng, mode: SegmentMode = prefs.mode, avoid = prefs.avoid && mode === "snap"): Waypoint => ({
@@ -478,6 +593,9 @@ export default function App() {
     }
   };
 
+  const importRef = useRef(importGpx);
+  importRef.current = importGpx;
+
   const saveToLibrary = () => {
     if (waypoints.length < 2) return toast("Rien à enregistrer pour l'instant.", "error");
     const id = currentId ?? uid();
@@ -506,6 +624,73 @@ export default function App() {
     saveLibrary(next);
     if (id === currentId) setCurrentId(null);
   };
+
+  const shareImage = async () => {
+    if (track.length < 2) return toast("Tracez un parcours d'abord.", "error");
+    try {
+      const blob = await renderCard({
+        name,
+        activity,
+        accent,
+        track,
+        profile,
+        stats: [
+          { label: "Distance", value: formatDistance(distance) },
+          { label: "D+", value: `${Math.round(stats.gain)} m` },
+          { label: "Durée", value: formatDuration(duration) },
+          { label: "Niveau", value: level.label },
+        ],
+      });
+      const file = new File([blob], `${slugify(name)}.png`, { type: "image/png" });
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: name }).catch(() => {});
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = file.name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        toast("Image téléchargée — parfaite pour Instagram ou WhatsApp", "success");
+      }
+    } catch {
+      toast("Impossible de créer l'image", "error");
+    }
+  };
+
+  // Drop a GPX file anywhere on the page to import it
+  useEffect(() => {
+    let depth = 0;
+    const hasFiles = (e: DragEvent) => e.dataTransfer?.types.includes("Files");
+    const enter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      depth++;
+      setDragOver(true);
+    };
+    const leave = () => {
+      depth = Math.max(0, depth - 1);
+      if (!depth) setDragOver(false);
+    };
+    const over = (e: DragEvent) => hasFiles(e) && e.preventDefault();
+    const drop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      setDragOver(false);
+      const f = e.dataTransfer!.files[0];
+      if (f) importRef.current(f);
+    };
+    window.addEventListener("dragenter", enter);
+    window.addEventListener("dragleave", leave);
+    window.addEventListener("dragover", over);
+    window.addEventListener("drop", drop);
+    return () => {
+      window.removeEventListener("dragenter", enter);
+      window.removeEventListener("dragleave", leave);
+      window.removeEventListener("dragover", over);
+      window.removeEventListener("drop", drop);
+    };
+  }, []);
 
   const share = async () => {
     if (waypoints.length < 2) return toast("Tracez un parcours avant de le partager.", "error");
@@ -541,6 +726,7 @@ export default function App() {
       } else if (e.key === "Escape") {
         setPlacing(null);
         setHelpOpen(false);
+        setReplay(null);
         setLayersOpen(false);
       } else if (mod) {
         return;
@@ -554,6 +740,10 @@ export default function App() {
         toggleAvoid();
       } else if (key === "f") {
         fitTo(waypoints);
+      } else if (e.key === " " && track.length > 1) {
+        e.preventDefault();
+        if (replay?.playing) setReplay({ ...replay, playing: false });
+        else startReplay();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -583,7 +773,11 @@ export default function App() {
         accent={accent}
         baseLayer={prefs.baseLayer}
         trails={prefs.trails}
-        hover={hover}
+        hillshade={prefs.hillshade}
+        slopeLines={slopeLines}
+        osmPois={osmPois}
+        replayTrail={replayTrail}
+        hover={replayPos ?? hover}
         kmMarks={kmMarks}
         overlaps={overlaps.lines}
         pois={pois}
@@ -600,6 +794,11 @@ export default function App() {
         onStartClick={closeLoop}
         onMovePoi={(id, p) => setPois((l) => l.map((x) => (x.id === id ? { ...x, lat: p[0], lng: p[1] } : x)))}
         onRemovePoi={(id) => setPois((l) => l.filter((x) => x.id !== id))}
+        onAddOsmPoi={addOsmPoi}
+        onRouteHover={(p) => {
+          if (!p || track.length < 2) return setRouteHoverD(null);
+          setRouteHoverD(locateOnTrack(track, cum, p).d);
+        }}
         onViewChange={(view) => updatePrefs({ view })}
       />
 
@@ -784,6 +983,18 @@ export default function App() {
                   </button>
                 ))}
               </div>
+              <button className="secondary osm-btn" onClick={findOsmPois} disabled={osmLoading || track.length < 2}>
+                {osmLoading ? <span className="spinner" /> : <Compass size={16} />}
+                Trouver eau, refuges & sommets sur le parcours
+              </button>
+              {osmPois.length > 0 && (
+                <p className="muted small">
+                  {osmPois.length} points OpenStreetMap affichés — cliquez dessus pour les ajouter à vos repères.{" "}
+                  <button className="link" onClick={() => setOsmPois([])}>
+                    Masquer
+                  </button>
+                </p>
+              )}
             </div>
 
             <div className="block loop-card">
@@ -834,12 +1045,15 @@ export default function App() {
                 <input type="checkbox" checked={withTimes} onChange={(e) => setWithTimes(e.target.checked)} />
                 <span>Inclure les horaires estimés (partenaire virtuel montre)</span>
               </label>
-              <div className="row">
+              <div className="row three">
                 <button className="secondary" onClick={saveToLibrary}>
                   <Save size={16} /> Enregistrer
                 </button>
-                <button className="secondary" onClick={share}>
-                  <Link2 size={16} /> Partager
+                <button className="secondary" onClick={share} title="Copier un lien vers ce parcours">
+                  <Link2 size={16} /> Lien
+                </button>
+                <button className="secondary" onClick={shareImage} title="Image à partager (story)">
+                  <ImageDown size={16} /> Image
                 </button>
               </div>
             </div>
@@ -848,9 +1062,20 @@ export default function App() {
 
         {tab === "plan" && (
           <Planner
+            activity={activity}
             start={prefs.start}
             onStartChange={(start) => updatePrefs({ start })}
             duration={duration}
+            runPace={prefs.runPace}
+            hikeSpeed={prefs.hikeSpeed}
+            onApplyPace={(runPace) => {
+              updatePrefs({ runPace });
+              toast(`Allure réglée sur ${formatPace(runPace)} /km`, "success");
+            }}
+            onApplySpeed={(hikeSpeed) => {
+              updatePrefs({ hikeSpeed });
+              toast(`Vitesse réglée sur ${hikeSpeed.toFixed(1)} km/h`, "success");
+            }}
             startPoint={waypoints[0] ?? null}
             splits={splits}
             pois={poisOnRoute}
@@ -859,6 +1084,7 @@ export default function App() {
             onFocusPoi={(p) => mapRef.current?.flyTo([p.lat, p.lng], Math.max(15, mapRef.current.getZoom()))}
             weight={prefs.weight}
             onWeightChange={(weight) => updatePrefs({ weight })}
+            kcal={kcal}
           />
         )}
 
@@ -937,6 +1163,14 @@ export default function App() {
                 <input type="checkbox" checked={prefs.trails} onChange={(e) => updatePrefs({ trails: e.target.checked })} />
                 <span>Sentiers balisés</span>
               </label>
+              <label className="check">
+                <input type="checkbox" checked={prefs.hillshade} onChange={(e) => updatePrefs({ hillshade: e.target.checked })} />
+                <span>Relief ombré</span>
+              </label>
+              <label className="check">
+                <input type="checkbox" checked={prefs.slopeColors} onChange={(e) => updatePrefs({ slopeColors: e.target.checked })} />
+                <span>Colorer le tracé selon la pente</span>
+              </label>
             </div>
           )}
         </div>
@@ -951,7 +1185,30 @@ export default function App() {
       {/* ── Elevation profile ─────────────────────────────────────────────── */}
       <section className="panel profile">
         <div className="profile-head">
-          <h2>Profil altimétrique</h2>
+          <div className="profile-title">
+            <h2>Profil altimétrique</h2>
+            <div className="replay-ctrl">
+              {replay?.playing ? (
+                <button className="icon-btn ghost" title="Pause" onClick={() => setReplay({ ...replay, playing: false })}>
+                  <span className="pause-icon" />
+                </button>
+              ) : (
+                <button className="replay-btn" onClick={startReplay} disabled={track.length < 2} title="Survoler le parcours">
+                  <Play size={13} /> {replay ? "Reprendre" : "Survol"}
+                </button>
+              )}
+              {replay && (
+                <>
+                  <button className="speed" onClick={() => setReplaySpeed((v) => (v >= 4 ? 1 : v * 2))} title="Vitesse">
+                    {replaySpeed}×
+                  </button>
+                  <button className="icon-btn ghost" title="Arrêter" onClick={() => setReplay(null)}>
+                    <Square size={13} />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
           <div className="legend">
             <i style={{ background: "#34d399" }} />
             &lt;3%
@@ -971,6 +1228,7 @@ export default function App() {
           loading={eleLoading}
           marks={chartMarks}
           overlaps={overlaps.ranges}
+          cursorD={replay?.d ?? routeHoverD}
           onHover={(p) => setHover(p ? [p.lat, p.lng] : null)}
           onPick={(p) => mapRef.current?.panTo([p.lat, p.lng])}
         />
@@ -988,6 +1246,36 @@ export default function App() {
             Cliquez sur la carte pour placer votre départ — ou générez une boucle
           </div>
         )
+      )}
+
+      {replay && (
+        <div className="replay-hud panel">
+          <div>
+            <span className="label">Distance</span>
+            <b>{(replay.d / 1000).toFixed(2)} km</b>
+          </div>
+          <div>
+            <span className="label">Altitude</span>
+            <b>{replayEle != null ? `${Math.round(replayEle)} m` : "—"}</b>
+          </div>
+          <div>
+            <span className="label">Temps</span>
+            <b>{formatDuration(distance ? (duration * replay.d) / distance : 0)}</b>
+          </div>
+          <div className="replay-progress">
+            <span style={{ width: `${distance ? (replay.d / distance) * 100 : 0}%` }} />
+          </div>
+        </div>
+      )}
+
+      {dragOver && (
+        <div className="drop-zone">
+          <div>
+            <Upload size={34} />
+            <b>Déposez votre fichier GPX</b>
+            <span>Il sera ouvert comme nouveau parcours</span>
+          </div>
+        </div>
       )}
 
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
@@ -1034,6 +1322,8 @@ const SHORTCUTS: [string, string][] = [
   ["B", "Boucler vers le départ"],
   ["R", "Activer / couper « ne pas repasser »"],
   ["F", "Recentrer sur le parcours"],
+  ["Espace", "Lancer / mettre en pause le survol"],
+  ["Glisser un fichier GPX", "L'importer"],
   ["Ctrl + S", "Enregistrer"],
   ["Ctrl + E", "Exporter"],
   ["Échap", "Annuler le placement d'un repère"],

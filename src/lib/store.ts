@@ -91,6 +91,8 @@ export const saveDraft = (d: Draft) => write(DRAFT_KEY, d);
 export interface Prefs {
   baseLayer: string;
   trails: boolean;
+  hillshade: boolean;
+  slopeColors: boolean;
   runPace: number;
   hikeSpeed: number;
   mode: "snap" | "line";
@@ -105,6 +107,8 @@ export interface Prefs {
 export const defaultPrefs: Prefs = {
   baseLayer: "topo",
   trails: false,
+  hillshade: false,
+  slopeColors: false,
   runPace: 6,
   hikeSpeed: 4.5,
   mode: "snap",
