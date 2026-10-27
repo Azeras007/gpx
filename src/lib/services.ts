@@ -1,7 +1,43 @@
-import type { LatLng, ProfilePoint } from "./geo";
+import { eleAt, type LatLng, type ProfilePoint } from "./geo";
+import { openMeteoBlockedUntil } from "./weather";
 
-/** Snaps a leg to paths & trails using the public OSRM "foot" profile. */
-export async function routeFoot(a: LatLng, b: LatLng, signal?: AbortSignal): Promise<LatLng[]> {
+export type RoutingProfile = "trails" | "roads";
+
+export interface Nogo {
+  lat: number;
+  lng: number;
+  radius: number;
+}
+
+export interface LegResult {
+  coords: LatLng[];
+  /** Set when the preferred engine failed and another one was used. */
+  degraded?: "no-avoid" | "fallback";
+}
+
+/**
+ * Cost added when the route crosses one of the "nogo" circles. Being a cost
+ * rather than a hard block, BRouter can still reuse a path when there is truly
+ * no other way (dead-end valley, single bridge…).
+ */
+const NOGO_WEIGHT = 800;
+
+async function brouter(a: LatLng, b: LatLng, nogos: Nogo[], signal?: AbortSignal): Promise<LatLng[]> {
+  let url =
+    `https://brouter.de/brouter?lonlats=${a[1].toFixed(6)},${a[0].toFixed(6)}|${b[1].toFixed(6)},${b[0].toFixed(6)}` +
+    `&profile=hiking-mountain&alternativeidx=0&format=geojson`;
+  if (nogos.length) {
+    url += `&nogos=${nogos.map((n) => `${n.lng.toFixed(5)},${n.lat.toFixed(5)},${Math.round(n.radius)},${NOGO_WEIGHT}`).join("|")}`;
+  }
+  const res = await fetch(url, { signal });
+  if (!res.ok) throw new Error(`BRouter HTTP ${res.status}`);
+  const json = await res.json();
+  const coords = json.features?.[0]?.geometry?.coordinates as number[][] | undefined;
+  if (!coords?.length) throw new Error("Aucun itinéraire");
+  return [a, ...coords.map(([lng, lat]) => [lat, lng] as LatLng), b];
+}
+
+async function osrm(a: LatLng, b: LatLng, signal?: AbortSignal): Promise<LatLng[]> {
   const coords = `${a[1]},${a[0]};${b[1]},${b[0]}`;
   const url = `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coords}?overview=full&geometries=geojson`;
   const res = await fetch(url, { signal });
@@ -14,23 +50,142 @@ export async function routeFoot(a: LatLng, b: LatLng, signal?: AbortSignal): Pro
   return [a, ...line, b];
 }
 
-const eleCache = new Map<string, number>();
-const key = (lat: number, lng: number) => `${lat.toFixed(4)},${lng.toFixed(4)}`;
-
-/** Fills elevations using the Open-Meteo DEM API (Copernicus 90 m), 100 points per call. */
-export async function fetchElevations(points: ProfilePoint[], signal?: AbortSignal): Promise<ProfilePoint[]> {
-  const missing = points.filter((p) => !eleCache.has(key(p.lat, p.lng)));
-  const unique = [...new Map(missing.map((p) => [key(p.lat, p.lng), p])).values()];
-  for (let i = 0; i < unique.length; i += 100) {
-    const chunk = unique.slice(i, i + 100);
-    const lat = chunk.map((p) => p.lat.toFixed(5)).join(",");
-    const lng = chunk.map((p) => p.lng.toFixed(5)).join(",");
-    const res = await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lng}`, { signal });
-    if (!res.ok) throw new Error(`Elevation HTTP ${res.status}`);
-    const json = await res.json();
-    (json.elevation as number[]).forEach((e, j) => eleCache.set(key(chunk[j].lat, chunk[j].lng), e));
+/**
+ * Routes a leg on foot. "trails" uses BRouter's hiking profile (prefers paths
+ * and footways), "roads" uses OSRM foot. Avoiding already-used paths needs
+ * BRouter's nogo areas. Each engine falls back on the other one.
+ */
+export async function routeLeg(
+  a: LatLng,
+  b: LatLng,
+  opts: { profile: RoutingProfile; nogos: Nogo[] },
+  signal?: AbortSignal,
+): Promise<LegResult> {
+  if (opts.nogos.length) {
+    try {
+      return { coords: await brouter(a, b, opts.nogos, signal) };
+    } catch {
+      /* fall through: route without avoidance */
+    }
+    const r = await routeLeg(a, b, { profile: opts.profile, nogos: [] }, signal);
+    return { coords: r.coords, degraded: "no-avoid" };
   }
-  return points.map((p) => ({ ...p, ele: eleCache.get(key(p.lat, p.lng)) ?? null }));
+  const [first, second] =
+    opts.profile === "trails" ? [() => brouter(a, b, [], signal), () => osrm(a, b, signal)] : [() => osrm(a, b, signal), () => brouter(a, b, [], signal)];
+  try {
+    return { coords: await first() };
+  } catch {
+    return { coords: await second(), degraded: "fallback" };
+  }
+}
+
+// ── Elevation ───────────────────────────────────────────────────────────────
+// Elevations are read from "Terrarium" terrain tiles (AWS open data, ~30 m
+// SRTM/Copernicus mosaic): a handful of PNG tiles cover a whole route and there
+// is no rate limit. Open-Meteo is only a fallback, with few points, because it
+// counts every location as a separate API call.
+
+const TERRARIUM = (z: number, x: number, y: number) => `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
+const tileCache = new Map<string, Promise<Uint8ClampedArray>>();
+
+function loadTile(z: number, x: number, y: number): Promise<Uint8ClampedArray> {
+  const k = `${z}/${x}/${y}`;
+  let p = tileCache.get(k);
+  if (!p) {
+    p = new Promise<Uint8ClampedArray>((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = c.height = 256;
+        const ctx = c.getContext("2d", { willReadFrequently: true })!;
+        ctx.drawImage(img, 0, 0);
+        resolve(ctx.getImageData(0, 0, 256, 256).data);
+      };
+      img.onerror = () => reject(new Error(`Tuile d'altitude ${k} indisponible`));
+      img.src = TERRARIUM(z, x, y);
+    });
+    p.catch(() => tileCache.delete(k));
+    tileCache.set(k, p);
+  }
+  return p;
+}
+
+const terrariumAt = (d: Uint8ClampedArray, px: number, py: number) => {
+  const i = (Math.min(255, Math.max(0, py)) * 256 + Math.min(255, Math.max(0, px))) * 4;
+  return d[i] * 256 + d[i + 1] + d[i + 2] / 256 - 32768;
+};
+
+async function tileElevations(points: ProfilePoint[], signal?: AbortSignal): Promise<ProfilePoint[]> {
+  const total = points.length ? points[points.length - 1].d : 0;
+  const z = total > 80000 ? 11 : 12;
+  const n = 2 ** z;
+  const pos = points.map((p) => {
+    const x = ((p.lng + 180) / 360) * n;
+    const s = Math.sin((p.lat * Math.PI) / 180);
+    const y = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n;
+    return { x, y };
+  });
+  const needed = new Set(pos.map(({ x, y }) => `${Math.floor(x)}/${Math.floor(y)}`));
+  if (needed.size > 60) throw new Error("Parcours trop étendu pour les tuiles");
+  const tiles = new Map<string, Uint8ClampedArray>();
+  await Promise.all(
+    [...needed].map(async (k) => {
+      const [x, y] = k.split("/").map(Number);
+      tiles.set(k, await loadTile(z, x, y));
+    }),
+  );
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  const out = points.map((p, i) => {
+    const { x, y } = pos[i];
+    const tile = tiles.get(`${Math.floor(x)}/${Math.floor(y)}`)!;
+    // Bilinear interpolation inside the tile
+    const fx = (x - Math.floor(x)) * 256 - 0.5;
+    const fy = (y - Math.floor(y)) * 256 - 0.5;
+    const x0 = Math.floor(fx);
+    const y0 = Math.floor(fy);
+    const tx = fx - x0;
+    const ty = fy - y0;
+    const e =
+      terrariumAt(tile, x0, y0) * (1 - tx) * (1 - ty) +
+      terrariumAt(tile, x0 + 1, y0) * tx * (1 - ty) +
+      terrariumAt(tile, x0, y0 + 1) * (1 - tx) * ty +
+      terrariumAt(tile, x0 + 1, y0 + 1) * tx * ty;
+    return { ...p, ele: Math.round(e * 10) / 10 };
+  });
+  // A broken or placeholder tile decodes to nonsense heights: let the caller fall back.
+  if (out.some((p) => p.ele! < -450 || p.ele! > 8900)) throw new Error("Tuile d'altitude invalide");
+  return out;
+}
+
+let lastOpenMeteoElevation = 0;
+
+async function openMeteoElevations(points: ProfilePoint[], signal?: AbortSignal): Promise<ProfilePoint[]> {
+  // Open-Meteo counts every location as one API call and shares that quota with
+  // the weather forecast: only 25 points, at most once a minute, never while
+  // the forecast is rate-limited.
+  if (Date.now() < openMeteoBlockedUntil() || Date.now() - lastOpenMeteoElevation < 60_000) {
+    throw new Error("Altitudes indisponibles");
+  }
+  lastOpenMeteoElevation = Date.now();
+  const step = Math.max(1, Math.ceil(points.length / 25));
+  const picked = points.filter((_, i) => i % step === 0 || i === points.length - 1).slice(0, 26);
+  const lat = picked.map((p) => p.lat.toFixed(5)).join(",");
+  const lng = picked.map((p) => p.lng.toFixed(5)).join(",");
+  const res = await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lng}`, { signal });
+  if (!res.ok) throw new Error(`Altitudes HTTP ${res.status}`);
+  const eles = (await res.json()).elevation as number[];
+  const known = picked.map((p, i) => ({ ...p, ele: eles[i] }));
+  return points.map((p) => ({ ...p, ele: eleAt(known, p.d) }));
+}
+
+export async function fetchElevations(points: ProfilePoint[], signal?: AbortSignal): Promise<ProfilePoint[]> {
+  try {
+    return await tileElevations(points, signal);
+  } catch (e) {
+    if ((e as Error).name === "AbortError") throw e;
+    return openMeteoElevations(points, signal);
+  }
 }
 
 export interface Place {
@@ -55,5 +210,52 @@ export async function searchPlaces(q: string, signal?: AbortSignal): Promise<Pla
       lat: parseFloat(r.lat),
       lng: parseFloat(r.lon),
     };
+  });
+}
+
+export interface OsmPoi {
+  id: number;
+  lat: number;
+  lng: number;
+  kind: "water" | "hut" | "shelter" | "peak" | "view" | "toilets";
+  name: string;
+  ele?: number;
+}
+
+/** Useful hiking/running amenities from OpenStreetMap inside a bounding box. */
+export async function fetchOsmPois(south: number, west: number, north: number, east: number, signal?: AbortSignal): Promise<OsmPoi[]> {
+  const bb = `${south.toFixed(5)},${west.toFixed(5)},${north.toFixed(5)},${east.toFixed(5)}`;
+  const q = `[out:json][timeout:25];(
+node["amenity"="drinking_water"](${bb});
+node["natural"="spring"]["drinking_water"="yes"](${bb});
+node["tourism"~"^(alpine_hut|wilderness_hut)$"](${bb});
+node["amenity"="shelter"](${bb});
+node["natural"="peak"]["name"](${bb});
+node["tourism"="viewpoint"](${bb});
+node["amenity"="toilets"](${bb});
+);out body 400;`;
+  const res = await fetch("https://overpass-api.de/api/interpreter", {
+    method: "POST",
+    body: new URLSearchParams({ data: q }),
+    signal,
+  });
+  if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
+  const json = (await res.json()) as { elements: { id: number; lat: number; lon: number; tags?: Record<string, string> }[] };
+  return json.elements.map((e) => {
+    const t = e.tags ?? {};
+    const kind: OsmPoi["kind"] =
+      t.amenity === "drinking_water" || t.natural === "spring"
+        ? "water"
+        : t.tourism === "alpine_hut" || t.tourism === "wilderness_hut"
+          ? "hut"
+          : t.amenity === "shelter"
+            ? "shelter"
+            : t.natural === "peak"
+              ? "peak"
+              : t.tourism === "viewpoint"
+                ? "view"
+                : "toilets";
+    const ele = t.ele ? parseFloat(t.ele) : undefined;
+    return { id: e.id, lat: e.lat, lng: e.lon, kind, name: t.name ?? "", ele: ele && isFinite(ele) ? ele : undefined };
   });
 }
