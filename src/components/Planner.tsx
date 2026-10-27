@@ -16,7 +16,8 @@ import {
   Wind,
 } from "lucide-react";
 import { formatDuration, formatPace, POI_TYPES, type Activity, type Poi, type Split } from "../lib/geo";
-import { fetchWeather, type Weather } from "../lib/services";
+import { getWeather, type Weather } from "../lib/weather";
+import { sunTimes } from "../lib/sun";
 
 const pad = (n: number) => String(n).padStart(2, "0");
 /** "YYYY-MM-DDTHH:mm" in local time. */
@@ -63,21 +64,26 @@ export default function Planner(p: Props) {
   const endDate = startDate ? new Date(startDate.getTime() + p.duration * 1000) : null;
   const daysAhead = startDate ? (startDate.getTime() - Date.now()) / 86400000 : 0;
   const forecastable = startDate != null && daysAhead > -1 && daysAhead < 15;
-  const lat = p.startPoint ? +p.startPoint.lat.toFixed(2) : null;
-  const lng = p.startPoint ? +p.startPoint.lng.toFixed(2) : null;
+  const lat = p.startPoint ? +p.startPoint.lat.toFixed(1) : null;
+  const lng = p.startPoint ? +p.startPoint.lng.toFixed(1) : null;
 
+  // Only the forecast cell (~10 km) and the number of days needed matter: the
+  // start time can change freely without any new request.
+  const daysNeeded = startDate ? Math.max(0, Math.ceil((endDate!.getTime() - Date.now()) / 86400000)) : 0;
   useEffect(() => {
     setWeatherError(null);
     if (!forecastable || lat == null || lng == null) return;
     let alive = true;
-    setWeather(null);
-    fetchWeather(lat, lng)
-      .then((w) => alive && setWeather(w))
-      .catch((e) => alive && setWeatherError((e as Error).message || "Erreur réseau"));
+    const t = setTimeout(() => {
+      getWeather(lat, lng, daysNeeded)
+        .then((w) => alive && setWeather(w))
+        .catch((e) => alive && setWeatherError((e as Error).message || "erreur réseau"));
+    }, 400);
     return () => {
       alive = false;
+      clearTimeout(t);
     };
-  }, [forecastable, lat, lng, retry]);
+  }, [forecastable, lat, lng, daysNeeded, retry]);
 
   // Forecast hours covering the outing (at most 8 cards).
   const hours = (() => {
@@ -88,11 +94,11 @@ export default function Planner(p: Props) {
     const every = Math.ceil(inRange.length / 8) || 1;
     return inRange.filter((_, i) => i % every === 0);
   })();
-  const day = weather?.days.find((d) => d.date === p.start.slice(0, 10));
-  const sunset = day ? new Date(day.sunset) : null;
+  const sun = startDate && p.startPoint ? sunTimes(startDate, p.startPoint.lat, p.startPoint.lng) : null;
+  const sunset = sun?.sunset ?? null;
   const lateFinish = sunset && endDate && endDate > sunset && startDate! < sunset;
   const maxTemp = hours.length ? Math.max(...hours.map((h) => h.temp)) : null;
-  const maxRain = hours.length ? Math.max(...hours.map((h) => h.rain)) : 0;
+  const maxRain = hours.length ? Math.max(...hours.map((h) => h.rain ?? ((h.mm ?? 0) >= 0.5 ? 60 : 0))) : 0;
 
   // Water & food: ~0.5 L/h walking, 0.6 L/h running, more when it is hot.
   const hoursOut = p.duration / 3600;
@@ -187,9 +193,9 @@ export default function Planner(p: Props) {
         <div className="block">
           <div className="block-head">
             <span>Météo sur le parcours</span>
-            {day && (
+            {sun?.sunrise && sun.sunset && (
               <span className="sun">
-                <Sun size={13} /> {day.sunrise.slice(11)} · <Sunset size={13} /> {day.sunset.slice(11)}
+                <Sun size={13} /> {clock(sun.sunrise)} · <Sunset size={13} /> {clock(sun.sunset)}
               </span>
             )}
           </div>
@@ -221,9 +227,15 @@ export default function Planner(p: Props) {
                     <span>{h.time.slice(11, 13)}h</span>
                     <WeatherIcon code={h.code} />
                     <b>{Math.round(h.temp)}°</b>
-                    <small className={h.rain >= 40 ? "rainy" : ""}>
-                      <Droplets size={10} /> {h.rain}%
-                    </small>
+                    {h.rain != null ? (
+                      <small className={h.rain >= 40 ? "rainy" : ""}>
+                        <Droplets size={10} /> {h.rain}%
+                      </small>
+                    ) : (
+                      <small className={(h.mm ?? 0) >= 0.5 ? "rainy" : ""}>
+                        <Droplets size={10} /> {(h.mm ?? 0).toFixed(1)} mm
+                      </small>
+                    )}
                     <small>
                       <Wind size={10} /> {Math.round(h.wind)}
                     </small>
@@ -231,6 +243,7 @@ export default function Planner(p: Props) {
                 ))}
               </div>
               {maxRain >= 50 && <p className="muted small">☔ Pluie probable — prenez une veste imperméable.</p>}
+              <p className="muted small source">Prévisions {weather.source}</p>
             </>
           )}
         </div>

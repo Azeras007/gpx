@@ -1,4 +1,5 @@
 import { eleAt, type LatLng, type ProfilePoint } from "./geo";
+import { openMeteoBlockedUntil } from "./weather";
 
 export type RoutingProfile = "trails" | "roads";
 
@@ -157,10 +158,18 @@ async function tileElevations(points: ProfilePoint[], signal?: AbortSignal): Pro
   return out;
 }
 
+let lastOpenMeteoElevation = 0;
+
 async function openMeteoElevations(points: ProfilePoint[], signal?: AbortSignal): Promise<ProfilePoint[]> {
-  // One request of at most 100 points, then linear interpolation in between.
-  const step = Math.max(1, Math.ceil(points.length / 100));
-  const picked = points.filter((_, i) => i % step === 0 || i === points.length - 1).slice(0, 100);
+  // Open-Meteo counts every location as one API call and shares that quota with
+  // the weather forecast: only 25 points, at most once a minute, never while
+  // the forecast is rate-limited.
+  if (Date.now() < openMeteoBlockedUntil() || Date.now() - lastOpenMeteoElevation < 60_000) {
+    throw new Error("Altitudes indisponibles");
+  }
+  lastOpenMeteoElevation = Date.now();
+  const step = Math.max(1, Math.ceil(points.length / 25));
+  const picked = points.filter((_, i) => i % step === 0 || i === points.length - 1).slice(0, 26);
   const lat = picked.map((p) => p.lat.toFixed(5)).join(",");
   const lng = picked.map((p) => p.lng.toFixed(5)).join(",");
   const res = await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lng}`, { signal });
@@ -202,56 +211,6 @@ export async function searchPlaces(q: string, signal?: AbortSignal): Promise<Pla
       lng: parseFloat(r.lon),
     };
   });
-}
-
-export interface Weather {
-  hours: { time: string; temp: number; rain: number; wind: number; code: number }[];
-  days: { date: string; sunrise: string; sunset: string }[];
-}
-
-const weatherCache = new Map<string, { at: number; data: Promise<Weather> }>();
-
-/**
- * 16-day hourly forecast around a point, in the place's local time
- * ("YYYY-MM-DDTHH:mm"). Cached 30 minutes per ~1 km cell.
- */
-export function fetchWeather(lat: number, lng: number): Promise<Weather> {
-  const k = `${lat.toFixed(2)},${lng.toFixed(2)}`;
-  const hit = weatherCache.get(k);
-  if (hit && Date.now() - hit.at < 30 * 60 * 1000) return hit.data;
-  const url =
-    `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lng.toFixed(3)}` +
-    `&hourly=temperature_2m,precipitation_probability,wind_speed_10m,weather_code&daily=sunrise,sunset` +
-    `&timezone=auto&forecast_days=16&past_days=1`;
-  const data = (async () => {
-    let res = await fetch(url);
-    if (res.status === 429) {
-      await new Promise((r) => setTimeout(r, 2000));
-      res = await fetch(url);
-    }
-    if (!res.ok) {
-      const reason = await res
-        .json()
-        .then((j) => j.reason as string)
-        .catch(() => "");
-      throw new Error(res.status === 429 ? "Trop de requêtes, réessayez dans une minute" : reason || `Erreur ${res.status}`);
-    }
-    const j = await res.json();
-    const h = j.hourly;
-    return {
-      hours: (h.time as string[]).map((time, i) => ({
-        time,
-        temp: h.temperature_2m[i],
-        rain: h.precipitation_probability?.[i] ?? 0,
-        wind: h.wind_speed_10m[i],
-        code: h.weather_code[i],
-      })),
-      days: (j.daily.time as string[]).map((date, i) => ({ date, sunrise: j.daily.sunrise[i], sunset: j.daily.sunset[i] })),
-    };
-  })();
-  data.catch(() => weatherCache.delete(k));
-  weatherCache.set(k, { at: Date.now(), data });
-  return data;
 }
 
 export interface OsmPoi {
