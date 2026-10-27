@@ -1,5 +1,7 @@
 import { useCallback, useReducer } from "react";
-import type { Activity, Waypoint } from "./geo";
+import type { Activity, Poi, Waypoint } from "./geo";
+import type { RoutingProfile } from "./services";
+import type { ExportFormat } from "./gpx";
 
 interface History {
   past: Waypoint[][];
@@ -46,6 +48,7 @@ export interface SavedRoute {
   name: string;
   activity: Activity;
   waypoints: Waypoint[];
+  pois?: Poi[];
   distance: number;
   gain: number;
   updatedAt: number;
@@ -80,6 +83,7 @@ export interface Draft {
   name: string;
   activity: Activity;
   waypoints: Waypoint[];
+  pois: Poi[];
 }
 export const loadDraft = () => read<Draft | null>(DRAFT_KEY, null);
 export const saveDraft = (d: Draft) => write(DRAFT_KEY, d);
@@ -90,6 +94,12 @@ export interface Prefs {
   runPace: number;
   hikeSpeed: number;
   mode: "snap" | "line";
+  profile: RoutingProfile;
+  avoid: boolean;
+  weight: number;
+  /** Planned start, "YYYY-MM-DDTHH:mm" local time; empty = not planned. */
+  start: string;
+  exportFormat: ExportFormat;
   view: { lat: number; lng: number; zoom: number } | null;
 }
 export const defaultPrefs: Prefs = {
@@ -98,6 +108,11 @@ export const defaultPrefs: Prefs = {
   runPace: 6,
   hikeSpeed: 4.5,
   mode: "snap",
+  profile: "trails",
+  avoid: false,
+  weight: 70,
+  start: "",
+  exportFormat: "gpx",
   view: null,
 };
 export const loadPrefs = (): Prefs => ({ ...defaultPrefs, ...read<Partial<Prefs>>(PREFS_KEY, {}) });

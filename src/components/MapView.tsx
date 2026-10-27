@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import type { LatLng, Waypoint } from "../lib/geo";
+import { POI_TYPES, type LatLng, type Poi, type Waypoint } from "../lib/geo";
 
 export const BASE_LAYERS: Record<string, { label: string; url: string; attribution: string; maxZoom: number }> = {
   topo: {
@@ -39,6 +39,10 @@ interface Props {
   trails: boolean;
   hover: LatLng | null;
   kmMarks: { pos: LatLng; km: number }[];
+  overlaps: LatLng[][];
+  pois: Poi[];
+  /** A point of interest is being placed: the next map click adds it. */
+  placing: boolean;
   initialView: { lat: number; lng: number; zoom: number } | null;
   onReady: (map: L.Map) => void;
   onAdd: (p: LatLng) => void;
@@ -46,6 +50,8 @@ interface Props {
   onMove: (id: string, p: LatLng) => void;
   onRemove: (id: string) => void;
   onStartClick: () => void;
+  onMovePoi: (id: string, p: LatLng) => void;
+  onRemovePoi: (id: string) => void;
   onViewChange: (v: { lat: number; lng: number; zoom: number }) => void;
 }
 
@@ -57,6 +63,8 @@ export default function MapView(props: Props) {
   const legGroup = useRef<L.LayerGroup | null>(null);
   const markerGroup = useRef<L.LayerGroup | null>(null);
   const kmGroup = useRef<L.LayerGroup | null>(null);
+  const overlapGroup = useRef<L.LayerGroup | null>(null);
+  const poiGroup = useRef<L.LayerGroup | null>(null);
   const hoverMarker = useRef<L.CircleMarker | null>(null);
   const legLines = useRef<{ casing: L.Polyline; line: L.Polyline }[]>([]);
   // Callbacks change identity on every render; keep the latest in a ref so the
@@ -78,8 +86,10 @@ export default function MapView(props: Props) {
     L.control.scale({ position: "bottomright", imperial: false }).addTo(m);
     m.attributionControl.setPrefix(false);
     legGroup.current = L.layerGroup().addTo(m);
+    overlapGroup.current = L.layerGroup().addTo(m);
     kmGroup.current = L.layerGroup().addTo(m);
     markerGroup.current = L.layerGroup().addTo(m);
+    poiGroup.current = L.layerGroup().addTo(m);
     m.on("click", (e: L.LeafletMouseEvent) => cb.current.onAdd([e.latlng.lat, e.latlng.lng]));
     m.on("moveend", () => {
       const c = m.getCenter();
@@ -222,6 +232,51 @@ export default function MapView(props: Props) {
       }).addTo(g);
     });
   }, [props.kmMarks]);
+
+  // Sections where the route passes again over itself
+  useEffect(() => {
+    const g = overlapGroup.current!;
+    g.clearLayers();
+    props.overlaps.forEach((line) => {
+      L.polyline(line, { color: "#111827", weight: 9, opacity: 0.55, lineCap: "round", interactive: false }).addTo(g);
+      L.polyline(line, { color: "#facc15", weight: 5, dashArray: "1 9", lineCap: "round", interactive: false }).addTo(g);
+    });
+  }, [props.overlaps]);
+
+  // Points of interest
+  useEffect(() => {
+    const g = poiGroup.current!;
+    g.clearLayers();
+    props.pois.forEach((poi) => {
+      const mk = L.marker([poi.lat, poi.lng], {
+        draggable: true,
+        zIndexOffset: 2000,
+        icon: L.divIcon({
+          className: "",
+          html: `<div class="poi poi-${poi.type}"><span>${POI_TYPES[poi.type].emoji}</span></div>`,
+          iconSize: [34, 40],
+          iconAnchor: [17, 38],
+        }),
+      });
+      mk.on("dragend", () => {
+        const p = mk.getLatLng();
+        cb.current.onMovePoi(poi.id, [p.lat, p.lng]);
+      });
+      mk.on("contextmenu", () => cb.current.onRemovePoi(poi.id));
+      mk.on("dblclick", () => cb.current.onRemovePoi(poi.id));
+      const name = poi.name.replace(/[<>&]/g, "");
+      mk.bindTooltip(`${name}<br><span>${POI_TYPES[poi.type].label} · double-clic pour supprimer</span>`, {
+        direction: "top",
+        offset: [0, -40],
+        className: "wp-tip",
+      });
+      mk.addTo(g);
+    });
+  }, [props.pois]);
+
+  useEffect(() => {
+    el.current!.classList.toggle("placing", props.placing);
+  }, [props.placing]);
 
   // Hover marker from the elevation profile
   useEffect(() => {

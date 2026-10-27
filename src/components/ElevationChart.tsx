@@ -6,7 +6,12 @@ interface Props {
   profile: ProfilePoint[];
   accent: string;
   loading: boolean;
+  /** Points of interest located along the route (distance in meters). */
+  marks: { d: number; emoji: string; name: string }[];
+  /** Distance ranges where the route passes again over itself. */
+  overlaps: [number, number][];
   onHover: (p: ProfilePoint | null) => void;
+  onPick: (p: ProfilePoint) => void;
 }
 
 const PAD = { l: 44, r: 14, t: 14, b: 24 };
@@ -28,7 +33,7 @@ function slopeColor(pct: number) {
   return "#a855f7";
 }
 
-export default function ElevationChart({ profile, accent, loading, onHover }: Props) {
+export default function ElevationChart({ profile, accent, loading, marks, overlaps, onHover, onPick }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 600, h: 150 });
   const [hoverI, setHoverI] = useState<number | null>(null);
@@ -96,7 +101,13 @@ export default function ElevationChart({ profile, accent, loading, onHover }: Pr
       : 0;
 
   return (
-    <div className="chart" ref={wrap} onPointerMove={handleMove} onPointerLeave={leave}>
+    <div
+      className="chart"
+      ref={wrap}
+      onPointerMove={handleMove}
+      onPointerLeave={leave}
+      onClick={() => hoverI != null && onPick(pts[hoverI])}
+    >
       {!geom ? (
         <div className="chart-empty">
           {loading ? <span className="spinner" /> : null}
@@ -123,10 +134,24 @@ export default function ElevationChart({ profile, accent, loading, onHover }: Pr
               {v >= 1000 ? `${+(v / 1000).toFixed(1)} km` : `${Math.round(v)} m`}
             </text>
           ))}
+          {overlaps.map(([a, b]) => (
+            <rect key={a} x={geom.x(a)} y={PAD.t} width={Math.max(2, geom.x(b) - geom.x(a))} height={geom.ih} className="overlap" />
+          ))}
           <path d={geom.area} fill="url(#area)" />
           {geom.runs.map((r, i) => (
             <path key={i} d={r.d} fill="none" stroke={r.color} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
           ))}
+          {marks
+            .filter((m) => m.d <= geom.total)
+            .map((m, i) => (
+              <g key={i} transform={`translate(${geom.x(m.d)},${PAD.t})`}>
+                <title>{m.name}</title>
+                <line y1={10} y2={geom.ih} className="poi-line" />
+                <text y={8} textAnchor="middle" fontSize={13}>
+                  {m.emoji}
+                </text>
+              </g>
+            ))}
           {hp && (
             <g>
               <line x1={geom.x(hp.d)} x2={geom.x(hp.d)} y1={PAD.t} y2={PAD.t + geom.ih} className="cursor" />
