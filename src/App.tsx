@@ -7,6 +7,7 @@ import {
   Compass,
   Clock,
   Download,
+  MoveHorizontal,
   Footprints,
   FolderOpen,
   Gauge,
@@ -40,7 +41,8 @@ import {
 import MapView, { BASE_LAYERS, OSM_KINDS } from "./components/MapView";
 import ElevationChart from "./components/ElevationChart";
 import Planner from "./components/Planner";
-import Explorer from "./components/Explorer";
+import Explorer, { KIND_HINT, type Tour } from "./components/Explorer";
+import { useMedia, useViewportHeight } from "./lib/useMedia";
 import UpgradeModal from "./components/UpgradeModal";
 import AccountModal from "./components/AccountModal";
 import { PoiIcon } from "./components/icons";
@@ -66,6 +68,10 @@ import {
   resample,
   sampleEvery,
   simplify,
+  smoothProfile,
+  gradeAt,
+  formatGrade,
+  formatDegrees,
   slopeColor,
   uid,
   type Activity,
@@ -77,7 +83,7 @@ import {
   type Waypoint,
 } from "./lib/geo";
 import { buildExport, downloadFile, EXPORT_FORMATS, parseGpx, slugify, type ExportFormat } from "./lib/gpx";
-import { fetchElevations, fetchOsmPois, routeLeg, searchPlaces, type Nogo, type OsmPoi, type Place, type Trail } from "./lib/services";
+import { fetchElevations, fetchOsmPois, routeLeg, searchPlaces, type Nogo, type OsmPoi, type Place } from "./lib/services";
 import { renderCard } from "./lib/shareImage";
 import { decodeRoute, encodeRoute } from "./lib/share";
 import {
@@ -206,7 +212,8 @@ export default function App() {
     };
   }, [account.user, toast]);
   const [upgrade, setUpgrade] = useState<{ feature: ProFeature | null } | null>(null);
-  const [preview, setPreview] = useState<{ trail: Trail; line: LatLng[] } | null>(null);
+  const [preview, setPreview] = useState<Tour | null>(null);
+  const [tours, setTours] = useState<Tour[]>([]);
   /** Opens the Pro offer when a free user reaches for a Pro feature; true = blocked. */
   const needPro = (f: ProFeature) => {
     if (plan.isPro) return false;
@@ -216,12 +223,44 @@ export default function App() {
   const baseLayer = plan.isPro || !PRO_LAYERS.includes(prefs.baseLayer) ? prefs.baseLayer : "topo";
   const hillshade = plan.isPro && prefs.hillshade;
   const slopeColorsOn = plan.isPro && prefs.slopeColors;
-  const [sheetOpen, setSheetOpen] = useState(false);
+  // ── Phone layout: the panel is a bottom sheet with three heights ────────
+  const isMobile = useMedia("(max-width: 860px)");
+  const vh = useViewportHeight();
+  const [sheet, setSheet] = useState<"peek" | "half" | "full">("peek");
+  const sheetHeights = { peek: 104, half: Math.round(vh * 0.56), full: vh - 68 };
+  const [dragH, setDragH] = useState<number | null>(null);
+  const drag = useRef<{ y: number; h: number; t: number; moved: boolean } | null>(null);
   const sidebarRef = useRef<HTMLElement>(null);
-  // A closed bottom sheet always shows its top (distance and duration).
+  // A collapsed sheet always shows its top (the summary).
   useEffect(() => {
-    if (!sheetOpen && sidebarRef.current) sidebarRef.current.scrollTop = 0;
-  }, [sheetOpen]);
+    if (sheet === "peek" && sidebarRef.current) sidebarRef.current.scrollTop = 0;
+  }, [sheet]);
+  const sheetDown = (e: React.PointerEvent) => {
+    drag.current = { y: e.clientY, h: sheetHeights[sheet], t: performance.now(), moved: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const sheetMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const dy = e.clientY - d.y;
+    if (Math.abs(dy) > 6) d.moved = true;
+    if (d.moved) setDragH(Math.max(sheetHeights.peek - 30, Math.min(sheetHeights.full, d.h - dy)));
+  };
+  const sheetUp = (e: React.PointerEvent) => {
+    const d = drag.current;
+    drag.current = null;
+    setDragH(null);
+    if (!d) return;
+    if (!d.moved) return setSheet((s) => (s === "peek" ? "half" : "peek"));
+    const h = d.h - (e.clientY - d.y);
+    const speed = (d.y - e.clientY) / Math.max(1, performance.now() - d.t); // px/ms, up > 0
+    const order = (["peek", "half", "full"] as const).map((k) => ({ k, h: sheetHeights[k] }));
+    let target = order.reduce((a, b) => (Math.abs(b.h - h) < Math.abs(a.h - h) ? b : a)).k;
+    // A quick flick carries on to the next height in that direction
+    if (speed > 0.5) target = order.find((o) => o.h > Math.max(h, d.h + 10))?.k ?? "full";
+    if (speed < -0.5) target = [...order].reverse().find((o) => o.h < Math.min(h, d.h - 10))?.k ?? "peek";
+    setSheet(target);
+  };
   const [layersOpen, setLayersOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("trace");
@@ -396,11 +435,12 @@ export default function App() {
   // Route drawn in slope colors (needs elevations)
   const slopeLines = useMemo(() => {
     if (!slopeColorsOn || profile.length < 2 || profile.some((p) => p.ele == null)) return null;
+    const smooth = smoothProfile(profile, 80);
     const runs: { color: string; coords: LatLng[] }[] = [];
-    for (let i = 1; i < profile.length; i++) {
-      const a = profile[i - 1];
-      const b = profile[i];
-      const color = slopeColor(((b.ele! - a.ele!) / (b.d - a.d || 1)) * 100);
+    for (let i = 1; i < smooth.length; i++) {
+      const a = smooth[i - 1];
+      const b = smooth[i];
+      const color = slopeColor(gradeAt(smooth, (a.d + b.d) / 2));
       // Real path between the two samples, not a straight shortcut
       const seg: LatLng[] = [[a.lat, a.lng]];
       for (let j = 0; j < track.length; j++) if (cum[j] > a.d && cum[j] < b.d) seg.push(track[j]);
@@ -439,7 +479,7 @@ export default function App() {
 
   const startReplay = () => {
     if (track.length < 2) return;
-    setSheetOpen(false);
+    setSheet("peek");
     const m = mapRef.current;
     if (m && m.getZoom() < 14) m.setView(track[0], 15, { animate: false });
     setReplay({ d: replay && replay.d < distance ? replay.d : 0, playing: true });
@@ -496,6 +536,8 @@ export default function App() {
     avoid,
   });
   const addPoint = (p: LatLng) => {
+    // On a phone, the first tap on the map just brings the map back
+    if (isMobile && sheet !== "peek") return setSheet("peek");
     if (placing) {
       setPois((list) => [...list, { id: uid(), lat: p[0], lng: p[1], type: placing, name: POI_TYPES[placing].label }]);
       setPlacing(null);
@@ -605,8 +647,8 @@ export default function App() {
       ],
     ) as [LatLng, LatLng];
     m.fitBounds(b, {
-      paddingTopLeft: mobile ? [30, 90] : [440, 90],
-      paddingBottomRight: mobile ? [30, 260] : [90, 260],
+      paddingTopLeft: mobile ? [24, 80] : [440, 90],
+      paddingBottomRight: mobile ? [24, 190] : [90, 260],
       maxZoom: 16,
     });
   }, []);
@@ -647,7 +689,7 @@ export default function App() {
     }
   };
 
-  const loadTrail = (t: Trail, line: LatLng[]) => {
+  const loadTrail = ({ trail: t, line }: Tour) => {
     let tol = 3;
     let pts = simplify(line, tol);
     while (pts.length > 350) pts = simplify(line, (tol *= 1.6));
@@ -720,7 +762,7 @@ export default function App() {
     setActivity(r.activity);
     setCurrentId(r.id);
     fitTo(r.waypoints);
-    setSheetOpen(false);
+    setSheet("peek");
     setTab("trace");
   };
 
@@ -878,14 +920,65 @@ export default function App() {
     if (t !== "explore") setPreview(null);
   };
 
-  const paceLabel =
-    activity === "run" ? `${formatPace(distance ? duration / 60 / (distance / 1000) : prefs.runPace)} /km` : null;
   const chartMarks = poisOnRoute
     .filter((p) => p.d != null)
     .map((p) => ({ d: p.d!, type: p.type, name: p.name }));
 
+  const profileBody = (
+    <>
+        <div className="profile-head">
+          <div className="profile-title">
+            <h2>Profil altimétrique</h2>
+            <div className="replay-ctrl">
+              {replay?.playing ? (
+                <button className="icon-btn ghost" title="Pause" onClick={() => setReplay({ ...replay, playing: false })}>
+                  <span className="pause-icon" />
+                </button>
+              ) : (
+                <button className="replay-btn" onClick={startReplay} disabled={track.length < 2} title="Survoler le parcours">
+                  <Play size={13} /> {replay ? "Reprendre" : "Survol"}
+                </button>
+              )}
+              {replay && (
+                <>
+                  <button className="speed" onClick={() => setReplaySpeed((v) => (v >= 4 ? 1 : v * 2))} title="Vitesse">
+                    {replaySpeed}×
+                  </button>
+                  <button className="icon-btn ghost" title="Arrêter" onClick={() => setReplay(null)}>
+                    <Square size={13} />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+          <div className="legend">
+            {[1, 5, 10, 15, 25].map((v, i) => (
+              <span key={v} className="legend-item">
+                <i style={{ background: slopeColor(v) }} />
+                {["< 3 %", "< 7 %", "< 12 %", "< 20 %", "20 % +"].at(i)}
+              </span>
+            ))}
+          </div>
+        </div>
+        <ElevationChart
+          profile={profile}
+          accent={accent}
+          loading={eleLoading}
+          marks={chartMarks}
+          overlaps={overlaps.ranges}
+          cursorD={replay?.d ?? routeHoverD}
+          onHover={(p) => setHover(p ? [p.lat, p.lng] : null)}
+          onPick={(p) => mapRef.current?.panTo([p.lat, p.lng])}
+        />
+          </>
+  );
+  const profilePanel = <section className="panel profile">{profileBody}</section>;
+
+  const paceLabel =
+    activity === "run" ? `${formatPace(distance ? duration / 60 / (distance / 1000) : prefs.runPace)} /km` : null;
+
   return (
-    <div className="app" style={{ "--accent": accent } as React.CSSProperties} data-activity={activity}>
+    <div className="app" style={{ "--accent": accent, "--peek": `${sheetHeights.peek}px` } as React.CSSProperties} data-activity={activity}>
       <MapView
         waypoints={waypoints}
         legs={legs}
@@ -898,6 +991,13 @@ export default function App() {
         osmPois={osmPois}
         replayTrail={replayTrail}
         preview={preview?.line ?? null}
+        tours={tab === "explore" ? tours.filter((t) => t.trail.id !== preview?.trail.id).map((t) => ({ id: t.trail.id, line: t.line })) : []}
+        onTourClick={(id) => {
+          const t = tours.find((x) => x.trail.id === id);
+          if (t) setPreview(t);
+          if (isMobile) setSheet("peek");
+        }}
+        bottomInset={isMobile ? sheetHeights.peek + 170 : 0}
         hover={replayPos ?? hover}
         kmMarks={kmMarks}
         overlaps={overlaps.lines}
@@ -924,10 +1024,50 @@ export default function App() {
       />
 
       {/* ── Sidebar ───────────────────────────────────────────────────────── */}
-      <aside ref={sidebarRef} className={`panel sidebar ${sheetOpen ? "open" : ""}`}>
-        <button className="sheet-handle" onClick={() => setSheetOpen((o) => !o)} aria-label="Afficher le panneau">
-          <span />
-        </button>
+      <aside
+        ref={sidebarRef}
+        className={`panel sidebar ${isMobile ? `sheet sheet-${sheet}` : ""} ${dragH != null ? "dragging" : ""}`}
+        style={isMobile ? { height: dragH ?? sheetHeights[sheet] } : undefined}
+      >
+        {isMobile && (
+          <div
+            className="sheet-top"
+            onPointerDown={sheetDown}
+            onPointerMove={sheetMove}
+            onPointerUp={sheetUp}
+            onPointerCancel={sheetUp}
+            role="button"
+            aria-label={sheet === "peek" ? "Ouvrir le panneau" : "Réduire le panneau"}
+          >
+            <span className="grip" />
+            <div className="summary">
+              <div>
+                <b>{formatDuration(duration)}</b>
+                <small>
+                  <Clock size={11} /> durée
+                </small>
+              </div>
+              <div>
+                <b>{formatDistance(distance)}</b>
+                <small>
+                  <MoveHorizontal size={11} /> distance
+                </small>
+              </div>
+              <div>
+                <b>{Math.round(stats.gain)} m</b>
+                <small>
+                  <TrendingUp size={11} /> montée
+                </small>
+              </div>
+              <div>
+                <b>{Math.round(stats.loss)} m</b>
+                <small>
+                  <TrendingDown size={11} /> descente
+                </small>
+              </div>
+            </div>
+          </div>
+        )}
         <header className="brand">
           <div className="logo" aria-hidden="true">
             <span className="mark">
@@ -981,6 +1121,8 @@ export default function App() {
           </button>
         </div>
 
+        {isMobile && tab === "trace" && track.length > 1 && <section className="m-profile">{profileBody}</section>}
+
         <section className="hero">
           <div className="hero-main">
             <span className="label">Distance</span>
@@ -1020,8 +1162,18 @@ export default function App() {
             <div className="stats">
               <Stat icon={<TrendingUp size={14} />} label="D+" value={`${Math.round(stats.gain)} m`} tone="up" loading={eleLoading} />
               <Stat icon={<TrendingDown size={14} />} label="D-" value={`${Math.round(stats.loss)} m`} tone="down" loading={eleLoading} />
-              <Stat icon={<Mountain size={14} />} label="Alt. max" value={stats.maxEle != null ? `${Math.round(stats.maxEle)} m` : "—"} />
-              <Stat icon={<Gauge size={14} />} label="Pente max" value={`${stats.maxSlope.toFixed(0)} %`} />
+              <Stat
+                icon={<Mountain size={14} />}
+                label="Pente moy."
+                value={formatGrade(stats.climbGrade)}
+                sub={`en montée · ${formatDegrees(stats.climbGrade)}`}
+              />
+              <Stat
+                icon={<Gauge size={14} />}
+                label="Plus raide"
+                value={`${stats.steepest.grade < 0 ? "−" : ""}${formatGrade(stats.steepest.grade)}`}
+                sub={`sur ${formatDistance(stats.steepest.over)} · ${formatDegrees(stats.steepest.grade)}`}
+              />
             </div>
 
             <div className="block">
@@ -1210,10 +1362,15 @@ export default function App() {
         {tab === "explore" && (
           <Explorer
             map={mapRef.current}
-            previewId={preview?.trail.id ?? null}
-            onPreview={(trail, line) => setPreview({ trail, line })}
-            onUse={loadTrail}
-            onError={(m) => toast(m, "error")}
+            activity={activity}
+            runPace={prefs.runPace}
+            hikeSpeed={prefs.hikeSpeed}
+            selectedId={preview?.trail.id ?? null}
+            onSelect={(t) => {
+              setPreview(t);
+              if (isMobile) setSheet("peek");
+            }}
+            onToursChange={setTours}
           />
         )}
 
@@ -1393,53 +1550,69 @@ export default function App() {
         </button>
       </div>
 
-      {/* ── Elevation profile ─────────────────────────────────────────────── */}
-      <section className="panel profile">
-        <div className="profile-head">
-          <div className="profile-title">
-            <h2>Profil altimétrique</h2>
-            <div className="replay-ctrl">
-              {replay?.playing ? (
-                <button className="icon-btn ghost" title="Pause" onClick={() => setReplay({ ...replay, playing: false })}>
-                  <span className="pause-icon" />
-                </button>
-              ) : (
-                <button className="replay-btn" onClick={startReplay} disabled={track.length < 2} title="Survoler le parcours">
-                  <Play size={13} /> {replay ? "Reprendre" : "Survol"}
-                </button>
-              )}
-              {replay && (
-                <>
-                  <button className="speed" onClick={() => setReplaySpeed((v) => (v >= 4 ? 1 : v * 2))} title="Vitesse">
-                    {replaySpeed}×
-                  </button>
-                  <button className="icon-btn ghost" title="Arrêter" onClick={() => setReplay(null)}>
-                    <Square size={13} />
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-          <div className="legend">
-            {[1, 5, 10, 15, 25].map((v, i) => (
-              <span key={v} className="legend-item">
-                <i style={{ background: slopeColor(v) }} />
-                {["< 3 %", "< 7 %", "< 12 %", "< 20 %", "20 % +"].at(i)}
+      {!isMobile && profilePanel}
+
+      {preview && (
+        <div className="tour-card panel" style={isMobile ? { bottom: sheetHeights.peek + 14 } : undefined}>
+          <button className="icon-btn ghost close" title="Fermer" onClick={() => setPreview(null)}>
+            <X size={16} />
+          </button>
+          <span className="tour-card-kind">
+            <span className={`trail-badge k-${preview.trail.kind}`} data-kind={preview.trail.kind}>
+              {preview.trail.kind}
+            </span>
+            {KIND_HINT[preview.trail.kind]}
+            {preview.trail.ref && preview.trail.ref !== preview.trail.name ? ` · ${preview.trail.ref}` : null}
+          </span>
+          <b className="tour-card-name">{preview.trail.name}</b>
+          {preview.stats && (
+            <div className="tour-card-stats">
+              <span>
+                <Clock size={13} /> {formatDuration(preview.stats.duration)}
               </span>
-            ))}
-          </div>
+              <span>
+                <MoveHorizontal size={13} /> {formatDistance(preview.stats.distance)}
+              </span>
+              <span>
+                <TrendingUp size={13} /> {Math.round(preview.stats.gain)} m
+              </span>
+              <span className={`level level-${preview.stats.level.level}`}>{preview.stats.level.label}</span>
+            </div>
+          )}
+          <button className="primary" onClick={() => loadTrail(preview)}>
+            Utiliser ce parcours
+          </button>
         </div>
-        <ElevationChart
-          profile={profile}
-          accent={accent}
-          loading={eleLoading}
-          marks={chartMarks}
-          overlaps={overlaps.ranges}
-          cursorD={replay?.d ?? routeHoverD}
-          onHover={(p) => setHover(p ? [p.lat, p.lng] : null)}
-          onPick={(p) => mapRef.current?.panTo([p.lat, p.lng])}
-        />
-      </section>
+      )}
+
+      {isMobile && sheet === "peek" && !preview && !replay && (
+        <div className="quickbar panel" style={{ bottom: sheetHeights.peek + 12 }}>
+          <button onClick={undo} disabled={!canUndo}>
+            <Undo2 size={19} />
+            <span>Annuler</span>
+          </button>
+          <button onClick={redo} disabled={!canRedo}>
+            <Redo2 size={19} />
+            <span>Rétablir</span>
+          </button>
+          <button onClick={() => updatePrefs({ mode: prefs.mode === "snap" ? "line" : "snap" })}>
+            {prefs.mode === "snap" ? <Route size={19} /> : <Ruler size={19} />}
+            <span>{prefs.mode === "snap" ? "Chemins" : "Ligne"}</span>
+          </button>
+          <button onClick={closeLoop} disabled={waypoints.length < 2}>
+            <Repeat size={19} />
+            <span>Boucler</span>
+          </button>
+          <button onClick={clear} disabled={!waypoints.length}>
+            <Trash2 size={19} />
+            <span>Effacer</span>
+          </button>
+          <button className="qb-primary" onClick={exportRoute} disabled={track.length < 2}>
+            <Download size={19} />
+            <span>GPX</span>
+          </button>
+        </div>
+      )}
 
       {placing ? (
         <div className="hint panel">
@@ -1530,13 +1703,14 @@ export default function App() {
   );
 }
 
-function Stat(props: { icon: React.ReactNode; label: string; value: string; tone?: "up" | "down" | "warn"; loading?: boolean }) {
+function Stat(props: { icon: React.ReactNode; label: string; value: string; sub?: string; tone?: "up" | "down" | "warn"; loading?: boolean }) {
   return (
     <div className={`stat ${props.tone ?? ""}`}>
       <span className="label">
         {props.icon} {props.label}
       </span>
       <b className={props.loading ? "shimmer" : ""}>{props.value}</b>
+      {props.sub && <small className="stat-sub">{props.sub}</small>}
     </div>
   );
 }
