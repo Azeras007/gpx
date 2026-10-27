@@ -2661,3 +2661,13 @@ kbd {
     padding-bottom: calc(22px + env(safe-area-inset-bottom));
   }
 }
+.search-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.search-status .link {
+  margin-left: auto;
+}

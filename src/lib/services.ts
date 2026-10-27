@@ -237,12 +237,20 @@ let preferredServer = 0;
 /** The query was too heavy for the server (it answers 200 with a "runtime error" remark). */
 export class OverpassTooBig extends Error {}
 
+/** A request to one server gives up after this long… */
+const SERVER_TIMEOUT = 20000;
+/** …and a whole query, all servers included, after this long. */
+const QUERY_DEADLINE = 45000;
+
 async function overpass<T>(query: string, signal?: AbortSignal): Promise<T> {
   let lastError: unknown = null;
+  const started = Date.now();
   for (let i = 0; i < OVERPASS_SERVERS.length; i++) {
+    const left = QUERY_DEADLINE - (Date.now() - started);
+    if (left < 3000) break;
     const idx = (preferredServer + i) % OVERPASS_SERVERS.length;
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 30000);
+    const timer = setTimeout(() => ctrl.abort(), Math.min(SERVER_TIMEOUT, left));
     const onAbort = () => ctrl.abort();
     signal?.addEventListener("abort", onAbort);
     try {
@@ -259,15 +267,15 @@ async function overpass<T>(query: string, signal?: AbortSignal): Promise<T> {
       preferredServer = idx;
       return json as T;
     } catch (e) {
-      if (signal?.aborted) throw e;
+      if (signal?.aborted) throw new DOMException("Recherche annulée", "AbortError");
       if (e instanceof OverpassTooBig) throw e;
-      lastError = e;
+      lastError = ctrl.signal.aborted ? new Error("délai dépassé") : e;
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
     }
   }
-  throw new Error(`Serveurs OpenStreetMap injoignables (${(lastError as Error)?.message ?? "réseau"})`);
+  throw new Error(`Les serveurs OpenStreetMap ne répondent pas (${(lastError as Error)?.message ?? "réseau"}). Réessayez dans un instant.`);
 }
 
 export async function fetchOsmPois(south: number, west: number, north: number, east: number, signal?: AbortSignal): Promise<OsmPoi[]> {
@@ -314,9 +322,8 @@ export interface Trail {
   loop: boolean;
   description: string;
   operator: string;
-  /** Bounding box diagonal, in meters: very large ones are multi-day routes. */
-  span: number;
-  center: LatLng;
+  /** Multi-day route (national or international network, or longer than 60 km): only its section in the area is used. */
+  long: boolean;
 }
 
 function parseDistance(v: string | undefined): number | null {
@@ -329,58 +336,57 @@ function parseDistance(v: string | undefined): number | null {
   return unit === "m" ? n : unit === "mi" ? n * 1609.34 : n * 1000;
 }
 
-type TrailElements = {
-  elements: { id: number; tags?: Record<string, string>; bounds?: { minlat: number; minlon: number; maxlat: number; maxlon: number } }[];
-};
+type TrailElements = { elements: { id: number; tags?: Record<string, string> }[] };
 
-/** Searches at most ~30 km across: wider boxes make the public servers time out. */
-const MAX_HALF_SPAN = 0.14;
+export type BBox = [south: number, west: number, north: number, east: number];
+const bboxString = (b: BBox) => b.map((v) => v.toFixed(4)).join(",");
 
 /**
- * Waymarked walking routes whose extent intersects the box. Too large a box
- * is cut down around its center, and cut again if the server still gives up.
+ * Waymarked walking routes crossing the box. Only their tags are asked for:
+ * asking for their extent ("out bb") makes the server load the whole
+ * geometry of every long-distance route passing by (a GR can be 2 000 km),
+ * which is what made searches time out.
  */
-export async function fetchTrails(south: number, west: number, north: number, east: number, signal?: AbortSignal): Promise<Trail[]> {
-  const cLat = (south + north) / 2;
-  const cLng = (west + east) / 2;
-  let half = Math.min(MAX_HALF_SPAN, (north - south) / 2, (east - west) / 2 / Math.cos((cLat * Math.PI) / 180) || MAX_HALF_SPAN);
-  let json: TrailElements | null = null;
-  for (let attempt = 0; attempt < 3 && !json; attempt++) {
-    const dLng = half / Math.cos((cLat * Math.PI) / 180);
-    const bb = `${(cLat - half).toFixed(4)},${(cLng - dLng).toFixed(4)},${(cLat + half).toFixed(4)},${(cLng + dLng).toFixed(4)}`;
-    const q = `[out:json][timeout:25];relation["type"="route"]["route"~"^(hiking|foot|running)$"](${bb});out tags bb 150;`;
-    try {
-      json = await overpass<TrailElements>(q, signal);
-    } catch (e) {
-      if (!(e instanceof OverpassTooBig) || attempt === 2) throw e instanceof OverpassTooBig ? new Error("Zone trop chargée, zoomez un peu plus") : e;
-      half /= 2;
-    }
+export async function fetchTrails(box: BBox, signal?: AbortSignal): Promise<Trail[]> {
+  const q = `[out:json][timeout:20];relation["type"="route"]["route"~"^(hiking|foot|running|fitness_trail)$"](${bboxString(box)});out tags 200;`;
+  let json: TrailElements;
+  try {
+    json = await overpass<TrailElements>(q, signal);
+  } catch (e) {
+    if (e instanceof OverpassTooBig) throw new Error("Zone trop chargée : zoomez un peu plus puis relancez « Zone affichée ».");
+    throw e;
   }
-  return json!.elements
+  return json.elements
     .filter((e) => e.tags && (e.tags.name || e.tags.ref))
     .map((e) => {
       const t = e.tags!;
-      const b = e.bounds;
       const net = t.network ?? "";
       const kind: Trail["kind"] =
-        t.route === "running" ? "Trail" : net === "iwn" || net === "nwn" ? "GR" : net === "rwn" ? "GRP" : net === "lwn" ? "PR" : "Rando";
-      const span = b ? haversine([b.minlat, b.minlon], [b.maxlat, b.maxlon]) : 0;
+        t.route === "running" || t.route === "fitness_trail"
+          ? "Trail"
+          : net === "iwn" || net === "nwn"
+            ? "GR"
+            : net === "rwn"
+              ? "GRP"
+              : net === "lwn"
+                ? "PR"
+                : "Rando";
+      const distance = parseDistance(t.distance);
       return {
         id: e.id,
         name: t.name ?? t.ref ?? "",
         ref: t.ref ?? "",
         kind,
-        distance: parseDistance(t.distance),
+        distance,
         loop: t.roundtrip === "yes",
         description: t.description ?? t["description:fr"] ?? "",
         operator: t.operator ?? "",
-        span,
-        center: b ? [(b.minlat + b.maxlat) / 2, (b.minlon + b.maxlon) / 2] : [0, 0],
+        long: net === "iwn" || net === "nwn" || (distance ?? 0) > 60000,
       } satisfies Trail;
     });
 }
 
-type Members = { type: string; role: string; geometry?: { lat: number; lon: number }[] }[];
+type Members = { type: string; role: string; geometry?: ({ lat: number; lon: number } | null)[] }[];
 
 /**
  * Stitches a route relation into a single line. Members come in route order
@@ -392,7 +398,15 @@ function stitch(members: Members): LatLng[] | null {
   const skip = /alternative|excursion|approach|connection|link/;
   const ways = members
     .filter((m) => m.type === "way" && m.geometry && m.geometry.length > 1 && !skip.test(m.role))
-    .map((m) => m.geometry!.map((g) => [g.lat, g.lon] as LatLng));
+    // A geometry clipped to an area may hold gaps (null points): split there
+    .flatMap((m) => {
+      const parts: LatLng[][] = [[]];
+      for (const g of m.geometry!) {
+        if (g && isFinite(g.lat)) parts[parts.length - 1].push([g.lat, g.lon]);
+        else if (parts[parts.length - 1].length) parts.push([]);
+      }
+      return parts.filter((p) => p.length > 1);
+    });
   if (!ways.length) return null;
   const chains: LatLng[][] = [];
   let cur: LatLng[] = [];
@@ -431,19 +445,23 @@ function stitch(members: Members): LatLng[] | null {
   return chains.reduce((x, y) => (length(y) > length(x) ? y : x));
 }
 
-/** Geometry of one route, as a single line. */
-export async function fetchTrailGeometry(id: number, signal?: AbortSignal): Promise<LatLng[]> {
-  const lines = await fetchTrailGeometries([id], signal);
+/** Geometry of one route, as a single line (only its part inside `clip` when given). */
+export async function fetchTrailGeometry(id: number, clip?: BBox, signal?: AbortSignal): Promise<LatLng[]> {
+  const lines = await fetchTrailGeometries([id], clip, signal);
   const line = lines.get(id);
   if (!line) throw new Error("Tracé introuvable pour cette randonnée");
   return line;
 }
 
-/** Geometries of several routes in a single request. */
-export async function fetchTrailGeometries(ids: number[], signal?: AbortSignal): Promise<Map<number, LatLng[]>> {
+/**
+ * Geometries of several routes in a single request. With `clip`, the server
+ * only returns what lies inside that box, so a long-distance route costs no
+ * more than its section around the user.
+ */
+export async function fetchTrailGeometries(ids: number[], clip?: BBox, signal?: AbortSignal): Promise<Map<number, LatLng[]>> {
   const out = new Map<number, LatLng[]>();
   if (!ids.length) return out;
-  const q = `[out:json][timeout:60];relation(id:${ids.join(",")});out geom;`;
+  const q = `[out:json][timeout:25];relation(id:${ids.join(",")});out geom${clip ? `(${bboxString(clip)})` : ""};`;
   const json = await overpass<{ elements: { id: number; members?: Members }[] }>(q, signal);
   for (const el of json.elements) {
     const line = stitch(el.members ?? []);

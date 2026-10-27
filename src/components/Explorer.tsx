@@ -14,7 +14,7 @@ import {
   type LatLng,
   type ProfilePoint,
 } from "../lib/geo";
-import { fetchElevations, fetchTrailGeometries, fetchTrailGeometry, fetchTrails, type Trail } from "../lib/services";
+import { fetchElevations, fetchTrailGeometries, fetchTrailGeometry, fetchTrails, type BBox, type Trail } from "../lib/services";
 
 type Filter = "all" | "short" | "mid" | "long" | "loop";
 
@@ -36,8 +36,22 @@ export const KIND_HINT: Record<Trail["kind"], string> = {
 
 /** How many routes get their line and figures loaded at once. */
 const BATCH = 10;
-/** Multi-day routes are not loaded with the batch: their geometry is heavy. */
-const isLong = (t: Trail) => t.span > 60000;
+/** Multi-day routes: only their section inside the searched area is shown. */
+const isLong = (t: Trail) => t.long;
+
+/** Box of ±`half` degrees of latitude around a point (same distance east-west). */
+function boxAround(c: LatLng, half: number): BBox {
+  const dLng = half / Math.cos((c[0] * Math.PI) / 180);
+  return [c[0] - half, c[1] - dLng, c[0] + half, c[1] + dLng];
+}
+
+/** Distance from `c` to the closest point of a line. */
+function distanceTo(c: LatLng, line: LatLng[]) {
+  const step = Math.max(1, Math.floor(line.length / 200));
+  let best = Infinity;
+  for (let i = 0; i < line.length; i += step) best = Math.min(best, haversine(c, line[i]));
+  return best;
+}
 
 export interface TourStats {
   distance: number;
@@ -96,12 +110,17 @@ export default function Explorer(p: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lines, p.activity, p.runPace, p.hikeSpeed]);
 
-  const loadLines = async (batch: Trail[]) => {
-    const ids = batch.filter((t) => !lines.has(t.id) && !isLong(t)).map((t) => t.id);
+  const [box, setBox] = useState<BBox | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  const loadLines = async (batch: Trail[], area: BBox, signal: AbortSignal) => {
+    const ids = batch.filter((t) => !lines.has(t.id)).map((t) => t.id);
     if (!ids.length) return;
     setLoadingLines(true);
     try {
-      const got = await fetchTrailGeometries(ids);
+      // Clipped to the searched area: a long-distance route only costs its local section
+      const got = await fetchTrailGeometries(ids, area, signal);
       setLines((m) => new Map([...m, ...got]));
       // Elevation for D+ and duration, from terrain tiles (no rate limit)
       await Promise.all(
@@ -115,28 +134,44 @@ export default function Explorer(p: Props) {
       );
       setLines((m) => new Map(m));
     } catch (e) {
-      setError((e as Error).message);
+      if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
       setLoadingLines(false);
     }
   };
 
+  const cancel = () => {
+    ctrlRef.current?.abort();
+    setLoading(false);
+    setLoadingLines(false);
+    setStatus(null);
+  };
+
   /** Searches a box around `c` (half-size in degrees of latitude). */
-  const searchAround = async (c: LatLng, half: number) => {
+  const searchAround = async (c: LatLng, half: number, note: string | null = null) => {
+    ctrlRef.current?.abort();
+    const ctrl = new AbortController();
+    ctrlRef.current = ctrl;
+    const area = boxAround(c, half);
     setLoading(true);
-    setError(null);
+    setError(note);
+    setStatus("Recherche des sentiers balisés…");
     try {
-      const dLng = half / Math.cos((c[0] * Math.PI) / 180);
-      const found = await fetchTrails(c[0] - half, c[1] - dLng, c[0] + half, c[1] + dLng);
-      // Closest first, multi-day routes last
-      found.sort((a, z) => Number(isLong(a)) - Number(isLong(z)) || haversine(a.center, c) - haversine(z.center, c));
+      const found = await fetchTrails(area, ctrl.signal);
+      // Day routes first, multi-day sections after
+      found.sort((a, z) => Number(isLong(a)) - Number(isLong(z)));
+      elevations.current.clear();
+      setLines(new Map());
       setOrigin(c);
+      setBox(area);
       setTrails(found);
       setShown(BATCH);
-      loadLines(found.slice(0, BATCH));
+      setStatus(null);
+      setLoading(false);
+      loadLines(found.slice(0, BATCH), area, ctrl.signal);
     } catch (e) {
-      setError((e as Error).message || "Recherche impossible pour le moment.");
-    } finally {
+      if ((e as Error).name !== "AbortError") setError((e as Error).message || "Recherche impossible pour le moment.");
+      setStatus(null);
       setLoading(false);
     }
   };
@@ -145,31 +180,58 @@ export default function Explorer(p: Props) {
     if (!p.map) return;
     const b = p.map.getBounds();
     const c = p.map.getCenter();
-    // Never wider than ~30 km: the public servers give up on large areas
-    searchAround([c.lat, c.lng], Math.min(0.14, (b.getNorth() - b.getSouth()) / 2));
+    // At most ~20 km across: enough for a day out, light for the public servers
+    searchAround([c.lat, c.lng], Math.min(0.09, (b.getNorth() - b.getSouth()) / 2));
   };
 
   const searchNearMe = () => {
-    if (!navigator.geolocation) return setError("Votre appareil ne donne pas sa position.");
+    const fallback = (why: string) => {
+      const c = p.map?.getCenter();
+      if (c) searchAround([c.lat, c.lng], 0.08, why);
+      else {
+        setError(why);
+        setLoading(false);
+      }
+    };
+    if (!navigator.geolocation) return fallback("Votre appareil ne donne pas sa position : recherche autour du centre de la carte.");
     setLoading(true);
     setError(null);
+    setStatus("Localisation…");
+    let done = false;
+    // Some browsers never answer while the permission prompt is ignored
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      fallback("Position introuvable : recherche autour du centre de la carte.");
+    }, 10000);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
         const c: LatLng = [pos.coords.latitude, pos.coords.longitude];
-        p.map?.setView(c, 12);
-        searchAround(c, 0.1);
+        p.map?.setView(c, 13);
+        searchAround(c, 0.08);
       },
       (err) => {
-        setLoading(false);
-        setError(
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        fallback(
           err.code === err.PERMISSION_DENIED
-            ? "Position refusée : autorisez la localisation pour ce site, ou cherchez dans la zone affichée."
-            : "Position introuvable pour le moment.",
+            ? "Position refusée (autorisez la localisation pour ce site) : recherche autour du centre de la carte."
+            : "Position introuvable : recherche autour du centre de la carte.",
         );
       },
-      { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 },
+      { enableHighAccuracy: false, timeout: 9000, maximumAge: 300000 },
     );
   };
+
+  const nearDist = useMemo(() => {
+    const m = new Map<number, number>();
+    if (origin) for (const [id, line] of lines) m.set(id, distanceTo(origin, line));
+    return m;
+  }, [lines, origin]);
 
   const tourOf = (t: Trail): Tour | null => {
     const line = lines.get(t.id);
@@ -181,7 +243,7 @@ export default function Explorer(p: Props) {
     if (!tour) {
       setBusyId(t.id);
       try {
-        const line = await fetchTrailGeometry(t.id);
+        const line = await fetchTrailGeometry(t.id, box ?? undefined);
         setLines((m) => new Map(m).set(t.id, line));
         tour = { trail: t, line, stats: computeFor(t.id, line) };
       } catch (e) {
@@ -219,8 +281,19 @@ export default function Explorer(p: Props) {
       return true;
     });
   }, [trails, filter, q, stats]);
+  // Closest first once their lines are known; still-loading ones keep their place after
+  const sorted = useMemo(
+    () =>
+      [...filtered].sort((a, z) => {
+        const da = nearDist.get(a.id);
+        const dz = nearDist.get(z.id);
+        if (da == null || dz == null) return Number(da == null) - Number(dz == null);
+        return Number(isLong(a)) - Number(isLong(z)) || da - dz;
+      }),
+    [filtered, nearDist],
+  );
 
-  const visible = filtered.slice(0, shown);
+  const visible = sorted.slice(0, shown);
 
   return (
     <div className="block explorer">
@@ -233,6 +306,14 @@ export default function Explorer(p: Props) {
           <Search size={16} /> Zone affichée
         </button>
       </div>
+      {status && (
+        <div className="search-status">
+          <Loader2 size={15} className="spin" /> {status}
+          <button className="link" onClick={cancel}>
+            Annuler
+          </button>
+        </div>
+      )}
       {error && <div className="alert">{error}</div>}
       {!trails && !error && (
         <p className="muted small">
@@ -265,7 +346,7 @@ export default function Explorer(p: Props) {
               return (
                 <li key={t.id} data-id={t.id} className={selected ? "selected" : ""}>
                   <button className="tour" onClick={() => select(t)}>
-                    <Thumb line={line ?? null} loading={busyId === t.id || (!line && loadingLines && !isLong(t))} kind={t.kind} />
+                    <Thumb line={line ?? null} loading={busyId === t.id || (!line && loadingLines)} kind={t.kind} />
                     <span className="tour-body">
                       <b>{t.name}</b>
                       {st ? (
@@ -282,7 +363,8 @@ export default function Explorer(p: Props) {
                         </span>
                       ) : (
                         <span className="tour-stats muted">
-                          {isLong(t) ? "Itinérance sur plusieurs jours" : t.distance ? formatDistance(t.distance) : KIND_HINT[t.kind]}
+                          {t.distance ? formatDistance(t.distance) : KIND_HINT[t.kind]}
+                          {isLong(t) && " · section dans la zone"}
                         </span>
                       )}
                       <span className="tour-meta">
@@ -295,7 +377,8 @@ export default function Explorer(p: Props) {
                             <Repeat size={11} /> boucle
                           </span>
                         )}
-                        {origin && !isLong(t) && <span>à {formatDistance(haversine(origin, t.center))}</span>}
+                        {isLong(t) && st && <span>section de l'itinéraire</span>}
+                        {nearDist.has(t.id) && <span>à {formatDistance(nearDist.get(t.id)!)}</span>}
                       </span>
                     </span>
                   </button>
@@ -312,9 +395,9 @@ export default function Explorer(p: Props) {
             <button
               className="secondary wide"
               onClick={() => {
-                const next = filtered.slice(shown, shown + BATCH);
+                const next = sorted.slice(shown, shown + BATCH);
                 setShown((n) => n + BATCH);
-                loadLines(next);
+                if (box && ctrlRef.current) loadLines(next, box, ctrlRef.current.signal);
               }}
             >
               Voir plus de randonnées
