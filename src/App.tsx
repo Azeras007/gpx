@@ -41,6 +41,9 @@ import ElevationChart from "./components/ElevationChart";
 import Planner from "./components/Planner";
 import Explorer from "./components/Explorer";
 import UpgradeModal from "./components/UpgradeModal";
+import AccountModal from "./components/AccountModal";
+import { useAccount } from "./lib/account";
+import { deleteRoute as deleteCloudRoute, listRoutes, RouteLimitError, saveRoute } from "./lib/cloud";
 import { FREE_ROUTE_LIMIT, PRO_FEATURES, usePlan, type ProFeature } from "./lib/plan";
 import {
   calories,
@@ -154,7 +157,19 @@ export default function App() {
   const { waypoints, set, undo, redo, canUndo, canRedo } = useWaypointHistory(init.waypoints);
   const [pois, setPois] = useState<Poi[]>(init.pois);
   const [placing, setPlacing] = useState<PoiType | null>(null);
-  const [library, setLibrary] = useState<SavedRoute[]>(loadLibrary);
+  const toast = useCallback((text: string, tone: Toast["tone"] = "info") => {
+    const id = uid();
+    setToasts((t) => [...t.filter((x) => x.text !== text), { id, text, tone }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3600);
+  }, []);
+
+  const account = useAccount();
+  const [localLibrary, setLocalLibrary] = useState<SavedRoute[]>(loadLibrary);
+  const [cloudLibrary, setCloudLibrary] = useState<SavedRoute[] | null>(null);
+  /** Signed in: routes live in the account; otherwise in this browser. */
+  const cloud = !!account.user;
+  const library = cloud ? (cloudLibrary ?? []) : localLibrary;
+  const [accountOpen, setAccountOpen] = useState<{ reason: string | null } | null>(null);
   const [legCache, setLegCache] = useState<Map<string, LegState>>(() => new Map());
   const [profile, setProfile] = useState<ProfilePoint[]>([]);
   const [eleLoading, setEleLoading] = useState(false);
@@ -168,7 +183,26 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [withTimes, setWithTimes] = useState(false);
-  const plan = usePlan();
+  const plan = usePlan(account.user);
+  const wasPaid = useRef(plan.paid);
+  useEffect(() => {
+    if (plan.paid && !wasPaid.current) toast("Bienvenue dans GPX Studio Pro, merci !", "success");
+    wasPaid.current = plan.paid;
+  }, [plan.paid, toast]);
+
+  useEffect(() => {
+    if (!account.user) {
+      setCloudLibrary(null);
+      return;
+    }
+    let alive = true;
+    listRoutes()
+      .then((r) => alive && setCloudLibrary(r))
+      .catch(() => alive && toast("Impossible de charger vos parcours en ligne.", "error"));
+    return () => {
+      alive = false;
+    };
+  }, [account.user, toast]);
   const [upgrade, setUpgrade] = useState<{ feature: ProFeature | null } | null>(null);
   const [preview, setPreview] = useState<{ trail: Trail; line: LatLng[] } | null>(null);
   /** Opens the Pro offer when a free user reaches for a Pro feature; true = blocked. */
@@ -190,11 +224,6 @@ export default function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const accent = ACCENTS[activity];
 
-  const toast = useCallback((text: string, tone: Toast["tone"] = "info") => {
-    const id = uid();
-    setToasts((t) => [...t.filter((x) => x.text !== text), { id, text, tone }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3600);
-  }, []);
 
   useEffect(() => {
     if (init.fromLink) toast("Parcours partagé chargé", "success");
@@ -630,17 +659,51 @@ export default function App() {
   const importRef = useRef(importGpx);
   importRef.current = importGpx;
 
-  const saveToLibrary = () => {
+  const saveToLibrary = async () => {
     if (waypoints.length < 2) return toast("Rien à enregistrer pour l'instant.", "error");
-    const isNew = !library.some((r) => r.id === currentId);
-    if (isNew && library.length >= FREE_ROUTE_LIMIT && needPro("library")) return;
+    if (cloud) {
+      const existing = cloudLibrary?.some((r) => r.id === currentId) ? currentId : null;
+      try {
+        const saved = await saveRoute({ id: existing, name, activity, waypoints, pois, distance, gain: stats.gain });
+        setCloudLibrary((l) => [saved, ...(l ?? []).filter((r) => r.id !== saved.id)]);
+        setCurrentId(saved.id);
+        toast("Parcours enregistré dans votre compte", "success");
+      } catch (e) {
+        if (e instanceof RouteLimitError) setUpgrade({ feature: "library" });
+        else toast("Enregistrement impossible, réessayez.", "error");
+      }
+      return;
+    }
+    const isNew = !localLibrary.some((r) => r.id === currentId);
+    if (isNew && localLibrary.length >= FREE_ROUTE_LIMIT && needPro("library")) return;
     const id = currentId ?? uid();
     const entry: SavedRoute = { id, name, activity, waypoints, pois, distance, gain: stats.gain, updatedAt: Date.now() };
-    const next = [entry, ...library.filter((r) => r.id !== id)];
-    setLibrary(next);
+    const next = [entry, ...localLibrary.filter((r) => r.id !== id)];
+    setLocalLibrary(next);
     saveLibrary(next);
     setCurrentId(id);
-    toast("Parcours enregistré", "success");
+    toast(account.enabled ? "Enregistré sur cet appareil — connectez-vous pour le retrouver partout" : "Parcours enregistré", "success");
+  };
+
+  /** Moves the routes saved in this browser to the account. */
+  const importLocalRoutes = async () => {
+    let moved = 0;
+    const left = [...localLibrary];
+    for (const r of localLibrary) {
+      try {
+        const saved = await saveRoute({ ...r, id: null });
+        setCloudLibrary((l) => [saved, ...(l ?? [])]);
+        left.splice(left.indexOf(r), 1);
+        moved++;
+      } catch (e) {
+        if (e instanceof RouteLimitError) setUpgrade({ feature: "library" });
+        else toast("Une partie des parcours n'a pas pu être importée.", "error");
+        break;
+      }
+    }
+    setLocalLibrary(left);
+    saveLibrary(left);
+    if (moved) toast(`${moved} parcours ajouté${moved > 1 ? "s" : ""} à votre compte`, "success");
   };
 
   const openRoute = (r: SavedRoute) => {
@@ -654,10 +717,19 @@ export default function App() {
     setTab("trace");
   };
 
-  const deleteRoute = (id: string) => {
-    const next = library.filter((r) => r.id !== id);
-    setLibrary(next);
-    saveLibrary(next);
+  const deleteRoute = async (id: string) => {
+    if (cloud) {
+      try {
+        await deleteCloudRoute(id);
+        setCloudLibrary((l) => (l ?? []).filter((r) => r.id !== id));
+      } catch {
+        return toast("Suppression impossible, réessayez.", "error");
+      }
+    } else {
+      const next = localLibrary.filter((r) => r.id !== id);
+      setLocalLibrary(next);
+      saveLibrary(next);
+    }
     if (id === currentId) setCurrentId(null);
   };
 
@@ -860,6 +932,16 @@ export default function App() {
             <p>Traceur de parcours</p>
           </div>
           <div className="brand-actions">
+            {account.enabled &&
+              (account.user ? (
+                <button className="avatar" title={account.user.email ?? "Mon compte"} onClick={() => setAccountOpen({ reason: null })}>
+                  {(account.user.email ?? "?").slice(0, 1).toUpperCase()}
+                </button>
+              ) : (
+                <button className="sign-in" onClick={() => setAccountOpen({ reason: null })}>
+                  Connexion
+                </button>
+              ))}
             {plan.paid ? (
               <span className="pro-pill">PRO</span>
             ) : plan.onTrial ? (
@@ -1182,6 +1264,20 @@ export default function App() {
                 <Save size={16} /> Enregistrer
               </button>
             </div>
+            {cloud && localLibrary.length > 0 && (
+              <button className="secondary wide" onClick={importLocalRoutes}>
+                Ajouter à mon compte les {localLibrary.length} parcours de cet appareil
+              </button>
+            )}
+            {account.enabled && !cloud && (
+              <p className="muted small">
+                Parcours enregistrés sur cet appareil.{" "}
+                <button className="link" onClick={() => setAccountOpen({ reason: null })}>
+                  Connectez-vous
+                </button>{" "}
+                pour les retrouver partout.
+              </p>
+            )}
             {!plan.isPro && (
               <p className="muted small">
                 {library.length}/{FREE_ROUTE_LIMIT} parcours enregistrés avec l'offre gratuite.{" "}
@@ -1388,15 +1484,33 @@ export default function App() {
 
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
 
+      {accountOpen && (
+        <AccountModal
+          account={account}
+          plan={plan}
+          reason={accountOpen.reason}
+          onUpgrade={() => {
+            setAccountOpen(null);
+            setUpgrade({ feature: null });
+          }}
+          onClose={() => setAccountOpen(null)}
+        />
+      )}
+
       {upgrade && (
         <UpgradeModal
           feature={upgrade.feature}
           trialUsed={plan.trialUsed}
-          onStartTrial={() => {
-            plan.startTrial();
-            toast("Essai Pro activé pour 14 jours — profitez-en !", "success");
+          onStartTrial={async () => {
+            const r = await plan.startTrial();
+            if (r.ok) toast("Essai Pro activé pour 14 jours — profitez-en !", "success");
+            return r;
           }}
           onCheckout={plan.checkout}
+          onNeedAccount={(reason) => {
+            setUpgrade(null);
+            setAccountOpen({ reason });
+          }}
           onClose={() => setUpgrade(null)}
         />
       )}

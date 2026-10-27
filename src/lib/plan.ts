@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
+import type { User } from "@supabase/supabase-js";
+import { functionError, supabase } from "./supabase";
 
 // Free vs Pro.
 //
-// IMPORTANT: this state lives in the browser, so anyone can unlock Pro from
-// the devtools. It is only meant to test the offer. Before selling, Pro must
-// be granted by a server that receives Stripe's webhook, and this module
-// should read the user's plan from that server instead.
+// With a backend (Supabase configured), the plan is read from the
+// `subscriptions` table, which only the Stripe webhook and the
+// `start_trial()` database function can write: the browser never decides
+// that someone is Pro. Without a backend (local demo), a trial is kept in
+// localStorage so the offer can still be tried out.
 
 export type ProFeature = "loop" | "avoid" | "planner" | "times" | "maps" | "amenities" | "library";
 
@@ -23,69 +26,151 @@ export const FREE_ROUTE_LIMIT = 5;
 export const TRIAL_DAYS = 14;
 export const PRICES = { monthly: "3,99 €", yearly: "24,99 €", founder: "19,99 €" };
 
-/** Stripe Payment Links, set in a `.env` file (see README). */
-export const CHECKOUT_LINKS = {
-  monthly: import.meta.env.VITE_STRIPE_LINK_MONTHLY as string | undefined,
-  yearly: import.meta.env.VITE_STRIPE_LINK_YEARLY as string | undefined,
-};
-
-interface PlanState {
-  pro: boolean;
-  trialStartedAt: number | null;
+interface Subscription {
+  status: string | null;
+  plan: "monthly" | "yearly" | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
+  trial_ends_at: string | null;
 }
 
-const KEY = "gpx-studio:plan";
+const LOCAL_KEY = "gpx-studio:plan";
 
-function read(): PlanState {
+function readLocalTrial(): number | null {
   try {
-    return { pro: false, trialStartedAt: null, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") };
+    return JSON.parse(localStorage.getItem(LOCAL_KEY) ?? "{}").trialStartedAt ?? null;
   } catch {
-    return { pro: false, trialStartedAt: null };
+    return null;
   }
 }
 
-function write(s: PlanState) {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(s));
-  } catch {
-    /* storage unavailable */
-  }
-}
+export type CheckoutResult = { ok: true } | { ok: false; needAccount?: boolean; message?: string };
 
-export function usePlan() {
-  const [state, setState] = useState<PlanState>(read);
-  useEffect(() => write(state), [state]);
+export function usePlan(user: User | null) {
+  const [sub, setSub] = useState<Subscription | null>(null);
+  const [localTrial, setLocalTrial] = useState<number | null>(readLocalTrial);
+  const [syncing, setSyncing] = useState(false);
 
-  // Back from Stripe Checkout (success URL ends with ?checkout=success).
+  const refresh = useCallback(async () => {
+    if (!supabase || !user) {
+      setSub(null);
+      return null;
+    }
+    const { data } = await supabase
+      .from("subscriptions")
+      .select("status, plan, current_period_end, cancel_at_period_end, trial_ends_at")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    setSub(data as Subscription | null);
+    return data as Subscription | null;
+  }, [user]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  // Back from Stripe Checkout: the webhook may land a few seconds after the
+  // redirect, so the plan is polled until it shows up.
   useEffect(() => {
     const params = new URLSearchParams(location.search);
-    if (params.get("checkout") === "success") {
-      setState((s) => ({ ...s, pro: true }));
-      params.delete("checkout");
-      const rest = params.toString();
-      history.replaceState(null, "", location.pathname + (rest ? `?${rest}` : "") + location.hash);
+    const result = params.get("checkout");
+    if (!result) return;
+    // The session is restored asynchronously: wait for the user before
+    // consuming the flag, or the poll would never start.
+    if (supabase && !user) return;
+    params.delete("checkout");
+    const rest = params.toString();
+    history.replaceState(null, "", location.pathname + (rest ? `?${rest}` : "") + location.hash);
+    if (result !== "success" || !supabase) return;
+    let tries = 0;
+    let stop = false;
+    setSyncing(true);
+    const poll = async () => {
+      const s = await refresh();
+      if (stop) return;
+      if (isPaid(s) || ++tries >= 15) setSyncing(false);
+      else setTimeout(poll, 2000);
+    };
+    poll();
+    return () => {
+      stop = true;
+    };
+  }, [user, refresh]);
+
+  const now = Date.now();
+  const paid = isPaid(sub);
+  const trialEnds = supabase
+    ? sub?.trial_ends_at
+      ? Date.parse(sub.trial_ends_at)
+      : 0
+    : localTrial
+      ? localTrial + TRIAL_DAYS * 86400000
+      : 0;
+  const onTrial = !paid && trialEnds > now;
+
+  const startTrial = useCallback(async (): Promise<CheckoutResult> => {
+    if (!supabase) {
+      const t = readLocalTrial() ?? Date.now();
+      try {
+        localStorage.setItem(LOCAL_KEY, JSON.stringify({ trialStartedAt: t }));
+      } catch {
+        /* storage unavailable */
+      }
+      setLocalTrial(t);
+      return { ok: true };
     }
-  }, []);
+    if (!user) return { ok: false, needAccount: true };
+    const { error } = await supabase.rpc("start_trial");
+    if (error) return { ok: false, message: error.message.includes("already") ? "Votre essai gratuit a déjà été utilisé." : error.message };
+    await refresh();
+    return { ok: true };
+  }, [user, refresh]);
 
-  const trialEnds = state.trialStartedAt ? state.trialStartedAt + TRIAL_DAYS * 86400000 : 0;
-  const onTrial = !state.pro && trialEnds > Date.now();
-  const trialDaysLeft = onTrial ? Math.ceil((trialEnds - Date.now()) / 86400000) : 0;
+  /** Redirects to Stripe Checkout (or to the billing portal if already subscribed). */
+  const checkout = useCallback(
+    async (period: "monthly" | "yearly"): Promise<CheckoutResult> => {
+      if (!supabase) return { ok: false, message: "Le paiement en ligne ouvre très bientôt. Merci de votre patience !" };
+      if (!user) return { ok: false, needAccount: true };
+      const { data, error } = await supabase.functions.invoke("create-checkout", { body: { period } });
+      if (error || !data?.url) return { ok: false, message: error ? await functionError(error) : "Paiement indisponible." };
+      window.location.href = data.url;
+      return { ok: true };
+    },
+    [user],
+  );
 
-  const startTrial = useCallback(() => setState((s) => (s.trialStartedAt ? s : { ...s, trialStartedAt: Date.now() })), []);
-  const checkout = useCallback((period: "monthly" | "yearly") => {
-    const link = CHECKOUT_LINKS[period];
-    if (!link) return false;
-    window.location.href = link;
-    return true;
-  }, []);
+  /** Stripe customer portal: change plan, card, cancel, invoices. */
+  const manage = useCallback(async (): Promise<string | null> => {
+    if (!supabase || !user) return "Connectez-vous d'abord.";
+    const { data, error } = await supabase.functions.invoke("create-portal", { body: {} });
+    if (error || !data?.url) return error ? functionError(error) : "Espace abonnement indisponible.";
+    window.location.href = data.url;
+    return null;
+  }, [user]);
 
   return {
-    isPro: state.pro || onTrial,
-    paid: state.pro,
+    isPro: paid || onTrial,
+    paid,
     onTrial,
-    trialDaysLeft,
-    trialUsed: state.trialStartedAt != null,
+    trialDaysLeft: onTrial ? Math.ceil((trialEnds - now) / 86400000) : 0,
+    trialUsed: supabase ? !!sub?.trial_ends_at : localTrial != null,
+    renewsAt: paid && sub?.current_period_end ? new Date(sub.current_period_end) : null,
+    cancelsAtPeriodEnd: !!sub?.cancel_at_period_end,
+    period: sub?.plan ?? null,
+    syncing,
     startTrial,
     checkout,
+    manage,
   };
 }
+
+function isPaid(s: Subscription | null) {
+  return (
+    !!s &&
+    ["active", "trialing", "past_due"].includes(s.status ?? "") &&
+    !!s.current_period_end &&
+    Date.parse(s.current_period_end) > Date.now()
+  );
+}
+
+export type Plan = ReturnType<typeof usePlan>;

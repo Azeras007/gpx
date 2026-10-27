@@ -1,18 +1,31 @@
 import { useState } from "react";
 import { Check, Sparkles, X } from "lucide-react";
-import { PRICES, PRO_FEATURES, TRIAL_DAYS, type ProFeature } from "../lib/plan";
+import { PRICES, PRO_FEATURES, TRIAL_DAYS, type CheckoutResult, type ProFeature } from "../lib/plan";
 
 interface Props {
   feature: ProFeature | null;
   trialUsed: boolean;
-  onStartTrial: () => void;
-  onCheckout: (period: "monthly" | "yearly") => boolean;
+  onStartTrial: () => Promise<CheckoutResult>;
+  onCheckout: (period: "monthly" | "yearly") => Promise<CheckoutResult>;
+  /** The action needs an account: open sign-in, then come back. */
+  onNeedAccount: (reason: string) => void;
   onClose: () => void;
 }
 
-export default function UpgradeModal({ feature, trialUsed, onStartTrial, onCheckout, onClose }: Props) {
+export default function UpgradeModal({ feature, trialUsed, onStartTrial, onCheckout, onNeedAccount, onClose }: Props) {
   const [period, setPeriod] = useState<"yearly" | "monthly">("yearly");
   const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const act = async (fn: () => Promise<CheckoutResult>, reason: string, closeOnSuccess: boolean) => {
+    setBusy(true);
+    setNotice(null);
+    const r = await fn();
+    setBusy(false);
+    if (r.ok) {
+      if (closeOnSuccess) onClose();
+    } else if (r.needAccount) onNeedAccount(reason);
+    else if (r.message) setNotice(r.message);
+  };
   const highlighted = feature ? PRO_FEATURES[feature] : null;
 
   return (
@@ -56,20 +69,18 @@ export default function UpgradeModal({ feature, trialUsed, onStartTrial, onCheck
         {!trialUsed && (
           <button
             className="primary"
-            onClick={() => {
-              onStartTrial();
-              onClose();
-            }}
+            disabled={busy}
+            onClick={() => act(onStartTrial, "Créez votre compte gratuit pour démarrer l'essai Pro de 14 jours.", true)}
           >
             <Sparkles size={17} /> Essayer {TRIAL_DAYS} jours gratuitement
           </button>
         )}
         <button
           className={trialUsed ? "primary" : "secondary wide"}
-          onClick={() => {
-            if (!onCheckout(period)) setNotice("Le paiement en ligne ouvre très bientôt. Merci de votre patience !");
-          }}
+          disabled={busy}
+          onClick={() => act(() => onCheckout(period), "Connectez-vous pour vous abonner : l'abonnement est lié à votre compte.", false)}
         >
+          {busy && <span className="spinner" />}
           S'abonner · {period === "yearly" ? `${PRICES.yearly}/an` : `${PRICES.monthly}/mois`}
         </button>
         {notice && <p className="muted small center">{notice}</p>}
