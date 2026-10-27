@@ -7,6 +7,7 @@ import {
   CloudSnow,
   CloudSun,
   Droplets,
+  Flame,
   RotateCw,
   Sun,
   Sunset,
@@ -15,8 +16,9 @@ import {
   Utensils,
   Wind,
 } from "lucide-react";
-import { formatDuration, formatPace, POI_TYPES, type Activity, type Poi, type Split } from "../lib/geo";
+import { formatDuration, formatPace, type Activity, type Poi, type Split } from "../lib/geo";
 import { getWeather, type Weather } from "../lib/weather";
+import { PoiIcon } from "./icons";
 import { sunTimes } from "../lib/sun";
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -26,13 +28,13 @@ export const toLocalInput = (d: Date) =>
 const clock = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
 function WeatherIcon({ code, size = 18 }: { code: number; size?: number }) {
-  if (code === 0) return <Sun size={size} color="#fbbf24" />;
-  if (code <= 2) return <CloudSun size={size} color="#fcd34d" />;
-  if (code === 3) return <Cloud size={size} color="#cbd5e1" />;
-  if (code === 45 || code === 48) return <CloudFog size={size} color="#94a3b8" />;
-  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return <CloudSnow size={size} color="#e0f2fe" />;
-  if (code >= 95) return <CloudLightning size={size} color="#c084fc" />;
-  return <CloudRain size={size} color="#60a5fa" />;
+  if (code === 0) return <Sun size={size} color="#b07d2b" />;
+  if (code <= 2) return <CloudSun size={size} color="#8a6a2a" />;
+  if (code === 3) return <Cloud size={size} color="#6e6a60" />;
+  if (code === 45 || code === 48) return <CloudFog size={size} color="#8b8578" />;
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return <CloudSnow size={size} color="#5d7894" />;
+  if (code >= 95) return <CloudLightning size={size} color="#6b3a5e" />;
+  return <CloudRain size={size} color="#3d5f87" />;
 }
 
 interface Props {
@@ -181,7 +183,7 @@ export default function Planner(p: Props) {
               </>
             ) : (
               <>
-                Vitesse de marche nécessaire : <b>{neededSpeed!.toFixed(1)} km/h</b>
+                Vitesse de marche nécessaire : <b>{neededSpeed!.toFixed(1).replace(".", ",")} km/h</b>
                 {neededSpeed! > 7 && " — très ambitieux"}
               </>
             )}
@@ -233,7 +235,7 @@ export default function Planner(p: Props) {
                       </small>
                     ) : (
                       <small className={(h.mm ?? 0) >= 0.5 ? "rainy" : ""}>
-                        <Droplets size={10} /> {(h.mm ?? 0).toFixed(1)} mm
+                        <Droplets size={10} /> {(h.mm ?? 0).toFixed(1).replace(".", ",")} mm
                       </small>
                     )}
                     <small>
@@ -265,7 +267,7 @@ export default function Planner(p: Props) {
             <span>{carbs ? `glucides ≈ ${Math.ceil(carbs / 25)} ${p.activity === "run" ? "gels" : "barres"}` : "pas de ravito nécessaire"}</span>
           </div>
           <div>
-            <span className="kcal">🔥</span>
+            <Flame size={18} />
             <b>{Math.round(p.kcal)}</b>
             <span>kcal dépensées</span>
           </div>
@@ -304,7 +306,7 @@ export default function Planner(p: Props) {
             </div>
             {p.splits.map((s) => (
               <div key={s.km} className="split">
-                <span>{Math.abs(s.length - 1000) < 1 ? s.km : (s.km - 1 + s.length / 1000).toFixed(2)}</span>
+                <span>{Math.abs(s.length - 1000) < 1 ? s.km : (s.km - 1 + s.length / 1000).toFixed(2).replace(".", ",")}</span>
                 <span className="up">{Math.round(s.gain)}</span>
                 <span className="down">{Math.round(s.loss)}</span>
                 <span>{formatSplit(s.time)}</span>
@@ -329,10 +331,10 @@ export default function Planner(p: Props) {
               .map((poi) => (
                 <li key={poi.id}>
                   <button className="poi-emoji" onClick={() => p.onFocusPoi(poi)} title="Centrer la carte">
-                    {POI_TYPES[poi.type].emoji}
+                    <PoiIcon type={poi.type} size={14} />
                   </button>
                   <input value={poi.name} onChange={(e) => p.onRenamePoi(poi.id, e.target.value)} />
-                  <span>{poi.d != null ? `km ${(poi.d / 1000).toFixed(1)}` : "hors tracé"}</span>
+                  <span>{poi.d != null ? `km ${(poi.d / 1000).toFixed(1).replace(".", ",")}` : "hors tracé"}</span>
                   <button className="icon-btn ghost" onClick={() => p.onRemovePoi(poi.id)} title="Supprimer">
                     <Trash2 size={14} />
                   </button>

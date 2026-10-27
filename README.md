@@ -36,17 +36,9 @@ L'app distingue un niveau gratuit et un abonnement **Pro** (24,99 €/an ou 3,99
 boucle automatique, « ne jamais repasser », plan de sortie, horaires dans le GPX, cartes IGN et relief,
 points d'eau et refuges, parcours illimités (5 en gratuit).
 
-> ⚠️ Le statut Pro est pour l'instant stocké **dans le navigateur** (`src/lib/plan.ts`) : il sert à tester l'offre,
-> pas à vendre. Avant d'encaisser, il faut des comptes et un serveur qui active le Pro à partir du webhook Stripe.
-
-Pour brancher des liens de paiement Stripe (mode test), créez un fichier `.env.local` :
-
-```
-VITE_STRIPE_LINK_YEARLY=https://buy.stripe.com/test_...
-VITE_STRIPE_LINK_MONTHLY=https://buy.stripe.com/test_...
-```
-
-avec comme URL de retour `https://votre-site/app.html?checkout=success`.
+Avec Supabase et Stripe configurés, le statut Pro est décidé **côté serveur** (webhook Stripe, essai unique,
+limite de parcours appliquée par la base). Sans configuration, l'app tourne en mode local de démonstration.
+Toute la mise en place est décrite dans **[SETUP.md](SETUP.md)**.
 
 ## Pages
 
@@ -76,7 +68,7 @@ npm run build    # build de production dans dist/
 
 ## Stack
 
-React 19 · TypeScript · Vite · Leaflet · lucide-react
+React 19 · TypeScript · Vite · Leaflet · Supabase (comptes, base de données, fonctions) · Stripe · polices Fraunces et Instrument Sans auto-hébergées
 
 ## Avant un usage commercial
 

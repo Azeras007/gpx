@@ -3,32 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0a0e15" />
+    <meta name="theme-color" content="#f4f0e6" />
     <title>GPX Studio — Préparez vos sorties trail et rando, exportez le GPX sur votre montre</title>
     <meta
       name="description"
-      content="Tracez votre parcours sur les sentiers, chargez un GR ou un PR balisé, connaissez D+, heure d'arrivée et météo, puis exportez le GPX vers Garmin, Coros, Suunto ou Polar. Gratuit pour commencer."
+      content="Tracez votre parcours sur les sentiers ou chargez un GR balisé, connaissez D+, heure d'arrivée et météo, puis exportez le GPX vers Garmin, Coros, Suunto ou Polar. Gratuit pour commencer."
     />
-    <meta property="og:title" content="GPX Studio — Préparez votre sortie en 2 minutes" />
+    <meta property="og:title" content="GPX Studio — Préparez la sortie, votre montre fera le reste" />
     <meta property="og:description" content="Traceur de parcours pour la course à pied, le trail et la randonnée. Export GPX vers votre montre." />
     <meta property="og:type" content="website" />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/src/landing.css" />
   </head>
   <body>
     <header class="nav">
       <a class="brand" href="./">
-        <span class="logo"><svg viewBox="0 0 64 64"><path d="M10 46 L23 25 L32 36 L41 17 L54 46" /></svg></span>
+        <span class="mark" aria-hidden="true"><i></i><i></i></span>
         GPX Studio
       </a>
       <nav>
-        <a href="#fonctionnalites">Fonctionnalités</a>
-        <a href="#randonnees">Randonnées</a>
+        <a href="#fonctionnalites">L'outil</a>
+        <a href="#balisage">Randonnées</a>
         <a href="#tarifs">Tarifs</a>
-        <a href="#faq">FAQ</a>
+        <a href="#faq">Questions</a>
       </nav>
       <a class="btn small" href="./app.html">Ouvrir l'app</a>
     </header>
@@ -36,115 +33,146 @@
     <main>
       <section class="hero">
         <div class="hero-text">
-          <span class="eyebrow">Course à pied · Trail · Randonnée</span>
-          <h1>Préparez votre sortie en 2 minutes.<br /><span>Retrouvez-la sur votre montre.</span></h1>
+          <p class="kicker">Course à pied · Trail · Randonnée</p>
+          <h1>Préparez la sortie.<br /><em>Votre montre fera le reste.</em></h1>
           <p class="lead">
-            Tracez sur les vrais sentiers ou chargez un GR balisé, découvrez votre D+, votre heure d'arrivée et la météo,
-            puis envoyez le GPX sur votre Garmin, Coros, Suunto ou Polar.
+            Tracez sur les vrais sentiers ou reprenez un GR balisé. Vous connaissez le dénivelé, l'heure d'arrivée et la
+            météo avant de lacer vos chaussures, puis le GPX part sur votre Garmin, Coros, Suunto ou Polar.
           </p>
           <div class="cta">
-            <a class="btn" href="./app.html">Tracer mon parcours — c'est gratuit</a>
-            <a class="btn ghost" href="#tarifs">Voir les tarifs</a>
+            <a class="btn" href="./app.html">Tracer un parcours</a>
+            <a class="textlink" href="#tarifs">Voir les tarifs →</a>
           </div>
-          <p class="fine">Sans inscription · Directement dans le navigateur · 100 % en français</p>
+          <p class="fine">Gratuit pour commencer, sans inscription, dans le navigateur.</p>
         </div>
 
-        <div class="mock" aria-hidden="true">
-          <div class="mock-window">
-            <div class="mock-bar"><i></i><i></i><i></i></div>
-            <svg class="mock-map" viewBox="0 0 600 380">
-              <defs>
-                <linearGradient id="g" x1="0" x2="1">
-                  <stop offset="0" stop-color="#ff5a36" />
-                  <stop offset="1" stop-color="#ff2d78" />
-                </linearGradient>
-              </defs>
-              <g class="contours">
-                <path d="M-20 300 C 80 260 160 320 260 280 S 460 220 640 260" />
-                <path d="M-20 250 C 90 210 170 270 270 230 S 450 170 640 210" />
-                <path d="M-20 200 C 100 160 180 220 280 180 S 440 120 640 160" />
-                <path d="M-20 150 C 110 110 190 170 290 130 S 430 70 640 110" />
-                <path d="M120 120 C 200 80 300 90 330 140 S 260 230 180 200 S 80 150 120 120" />
-                <path d="M160 130 C 210 105 280 110 295 145 S 250 200 195 185 S 135 150 160 130" />
-                <path d="M420 300 C 470 270 560 280 570 320 S 500 370 450 350 S 390 320 420 300" />
-              </g>
-              <path class="route-glow" d="M80 300 C 120 240 170 250 200 190 S 290 120 330 150 S 420 230 470 190 S 540 130 520 260 S 380 330 300 310 S 140 340 80 300" />
-              <path class="route" d="M80 300 C 120 240 170 250 200 190 S 290 120 330 150 S 420 230 470 190 S 540 130 520 260 S 380 330 300 310 S 140 340 80 300" />
-              <circle cx="80" cy="300" r="10" class="start" />
-              <circle cx="200" cy="190" r="6" class="wp" />
-              <circle cx="330" cy="150" r="6" class="wp" />
-              <circle cx="470" cy="190" r="6" class="wp" />
-              <circle cx="520" cy="260" r="6" class="wp" />
-              <text x="335" y="138" class="poi">⛰️</text>
-              <text x="470" y="178" class="poi">💧</text>
+        <figure class="plate">
+          <svg viewBox="0 0 560 420" role="img" aria-label="Exemple de parcours tracé sur une carte topographique">
+            <rect width="560" height="420" fill="#efe9dc" />
+            <g fill="none" stroke="#b9ae98" stroke-width="1">
+              <path d="M-10 330 C 90 290 170 350 270 310 S 470 250 580 290" />
+              <path d="M-10 280 C 100 240 180 300 280 260 S 460 200 580 240" />
+              <path d="M-10 230 C 110 190 190 250 290 210 S 450 150 580 190" />
+              <path d="M-10 180 C 120 140 200 200 300 160 S 440 100 580 140" />
+              <path d="M140 140 C 210 100 310 108 340 156 S 270 246 196 218 S 102 168 140 140" />
+              <path d="M178 150 C 222 126 290 130 304 162 S 262 214 210 200 S 152 168 178 150" />
+              <path d="M214 160 C 236 150 270 152 276 166 S 254 190 230 184 S 200 170 214 160" />
+              <path d="M410 330 C 460 300 540 310 550 350 S 490 400 440 380 S 380 350 410 330" />
+            </g>
+            <path d="M-10 380 C 80 360 120 400 200 384 S 330 352 400 372 S 520 410 580 396" fill="none" stroke="#7b9bb8" stroke-width="3" />
+            <path d="M92 318 C 130 262 176 268 204 210 S 292 140 334 168 S 418 246 466 206 S 528 150 512 270 S 380 344 300 326 S 150 352 92 318" fill="none" stroke="#fbf9f4" stroke-width="11" stroke-linecap="round" />
+            <path class="route" d="M92 318 C 130 262 176 268 204 210 S 292 140 334 168 S 418 246 466 206 S 528 150 512 270 S 380 344 300 326 S 150 352 92 318" fill="none" stroke="#b4472e" stroke-width="5" stroke-linecap="round" />
+            <circle cx="92" cy="318" r="8" fill="#2e5a45" stroke="#fff" stroke-width="3" />
+            <circle cx="300" cy="168" r="4" fill="#1d1c18" />
+            <circle cx="466" cy="206" r="4" fill="#1d1c18" />
+            <g class="annot" font-size="10.5" font-weight="600" letter-spacing="1.4" fill="#1d1c18">
+              <path d="M300 168 L300 92 L338 92" stroke="#1d1c18" fill="none" />
+              <text x="342" y="88">LE COL</text>
+              <text x="342" y="102" font-weight="400" fill="#57534a">1 120 m · km 7,8</text>
+              <path d="M466 206 L466 130 L496 130" stroke="#1d1c18" fill="none" />
+              <text x="500" y="126">SOURCE</text>
+              <text x="500" y="140" font-weight="400" fill="#57534a">km 11,2</text>
+              <path d="M92 318 L50 276" stroke="#1d1c18" fill="none" />
+              <text x="22" y="268">DÉPART</text>
+            </g>
+          </svg>
+          <div class="plate-profile">
+            <svg viewBox="0 0 560 70" preserveAspectRatio="none" aria-hidden="true">
+              <path d="M0 64 L0 52 C 50 50 80 34 130 26 S 220 6 270 18 S 350 50 410 38 S 500 10 560 42 L560 64 Z" fill="rgba(180,71,46,0.14)" />
+              <path d="M0 52 C 50 50 80 34 130 26 S 220 6 270 18 S 350 50 410 38 S 500 10 560 42" fill="none" stroke="#1d1c18" stroke-width="1.5" />
             </svg>
-            <div class="mock-profile">
-              <svg viewBox="0 0 600 90" preserveAspectRatio="none">
-                <path class="area" d="M0 80 L0 62 C 60 58 90 40 140 30 S 230 8 280 22 S 360 60 420 44 S 520 12 600 50 L600 80 Z" />
-                <path class="line" d="M0 62 C 60 58 90 40 140 30 S 230 8 280 22 S 360 60 420 44 S 520 12 600 50" />
-              </svg>
-            </div>
+            <dl>
+              <div><dt>Distance</dt><dd>18,4 km</dd></div>
+              <div><dt>D+</dt><dd>1 120 m</dd></div>
+              <div><dt>Arrivée</dt><dd>14 h 35</dd></div>
+            </dl>
           </div>
-          <div class="float f1"><small>Distance</small><b>18,4 km</b></div>
-          <div class="float f2"><small>D+</small><b>1 120 m</b></div>
-          <div class="float f3"><small>Arrivée</small><b>14:35</b><em>☀️ 19°</em></div>
-        </div>
+          <figcaption>Exemple — une boucle préparée en deux minutes, prête à partir sur la montre.</figcaption>
+        </figure>
       </section>
 
       <section class="compat">
-        <p>Fonctionne avec toutes les montres et GPS qui lisent le GPX</p>
-        <div><span>Garmin</span><span>Coros</span><span>Suunto</span><span>Polar</span><span>Strava</span><span>GPS de randonnée</span></div>
+        <p>Le GPX exporté se lit sur</p>
+        <ul>
+          <li>Garmin</li>
+          <li>Coros</li>
+          <li>Suunto</li>
+          <li>Polar</li>
+          <li>Strava</li>
+          <li>votre GPS de rando</li>
+        </ul>
       </section>
 
       <section id="fonctionnalites" class="features">
-        <h2>Tout ce qu'il faut pour préparer, rien de superflu</h2>
-        <div class="grid">
-          <article>
-            <span class="ico">🥾</span>
+        <header class="section-head">
+          <p class="kicker">L'outil</p>
+          <h2>Ce qu'il faut pour préparer.<br /><em>Rien de plus.</em></h2>
+        </header>
+        <ol class="feature-list">
+          <li>
+            <span class="num">01</span>
             <h3>Un tracé qui suit les sentiers</h3>
-            <p>Cliquez, le parcours se colle aux chemins et sentiers. Distance, D+, D-, pente et durée estimée à jour en direct.</p>
-          </article>
-          <article>
-            <span class="ico">🧭</span>
-            <h3>Les randonnées balisées prêtes à charger</h3>
-            <p>GR, GR de Pays, PR et parcours de trail de la zone : un clic pour les afficher, un autre pour les modifier ou les exporter.</p>
-          </article>
-          <article>
-            <span class="ico">🚫</span>
-            <h3>Ne jamais repasser au même endroit <em>Pro</em></h3>
-            <p>Chaque segment cherche un autre chemin. Les passages en double sont surlignés pour que vous les évitiez.</p>
-          </article>
-          <article>
-            <span class="ico">✨</span>
-            <h3>La boucle en un clic <em>Pro</em></h3>
-            <p>Indiquez 12 km : l'app propose une boucle depuis votre porte, sur les sentiers, sans aller-retour.</p>
-          </article>
-          <article>
-            <span class="ico">🌤️</span>
-            <h3>Votre plan de sortie <em>Pro</em></h3>
-            <p>Météo heure par heure sur le parcours, heure d'arrivée, alerte coucher du soleil, temps de passage, eau et nourriture.</p>
-          </article>
-          <article>
-            <span class="ico">🗺️</span>
-            <h3>Cartes IGN et relief <em>Pro</em></h3>
-            <p>IGN Plan et photo aérienne, relief ombré, tracé coloré selon la pente pour repérer les passages raides.</p>
-          </article>
-        </div>
+            <p>Un clic par point de passage, le parcours se colle aux chemins. Distance, dénivelé, pente et durée se mettent à jour à chaque clic.</p>
+          </li>
+          <li>
+            <span class="num">02</span>
+            <h3>Les randonnées balisées de la région</h3>
+            <p>GR, GR de Pays, PR et parcours de trail autour de vous, à reprendre tels quels ou à modifier.</p>
+          </li>
+          <li>
+            <span class="num">03</span>
+            <h3>Jamais deux fois le même chemin <small>Pro</small></h3>
+            <p>Chaque nouveau segment cherche un autre passage. Les portions faites deux fois sont signalées sur la carte.</p>
+          </li>
+          <li>
+            <span class="num">04</span>
+            <h3>La boucle en un clic <small>Pro</small></h3>
+            <p>Indiquez 12 km : une boucle part de votre porte, sur les sentiers, sans aller-retour.</p>
+          </li>
+          <li>
+            <span class="num">05</span>
+            <h3>Le plan de sortie <small>Pro</small></h3>
+            <p>Météo heure par heure sur le parcours, heure d'arrivée, coucher du soleil, temps de passage, eau à emporter.</p>
+          </li>
+          <li>
+            <span class="num">06</span>
+            <h3>Les cartes IGN <small>Pro</small></h3>
+            <p>IGN Plan et photo aérienne, relief ombré, et le tracé coloré selon la pente pour repérer les passages raides.</p>
+          </li>
+        </ol>
       </section>
 
-      <section id="randonnees" class="steps">
-        <h2>De l'idée à la montre en trois étapes</h2>
+      <section id="balisage" class="waymarks">
+        <div class="waymarks-text">
+          <p class="kicker">Randonnées</p>
+          <h2>Suivez les balises,<br /><em>ou sortez-en.</em></h2>
+          <p>
+            Les itinéraires balisés connus d'OpenStreetMap apparaissent pour la zone que vous regardez. Chargez-en un, coupez une
+            portion, ajoutez un détour, puis exportez. Vérifiez toujours le balisage sur le terrain.
+          </p>
+          <a class="btn" href="./app.html">Explorer autour de moi</a>
+        </div>
+        <ul class="plates">
+          <li><span class="wm gr"></span><b>GR</b><small>Grande Randonnée</small></li>
+          <li><span class="wm grp"></span><b>GRP</b><small>GR de Pays</small></li>
+          <li><span class="wm pr"></span><b>PR</b><small>Promenade et Randonnée</small></li>
+          <li><span class="wm trail"></span><b>Trail</b><small>Parcours de trail</small></li>
+        </ul>
+      </section>
+
+      <section class="steps">
         <ol>
-          <li><b>Choisissez</b> une randonnée balisée près de chez vous, ou tracez la vôtre en quelques clics.</li>
-          <li><b>Vérifiez</b> le profil, la durée, la météo et ce qu'il faut emporter.</li>
-          <li><b>Exportez</b> le GPX et chargez-le sur votre montre ou votre GPS. Partagez l'image de votre parcours en story.</li>
+          <li><span>1</span><b>Choisir</b> un sentier balisé ou tracer le sien.</li>
+          <li><span>2</span><b>Vérifier</b> profil, durée, météo et ce qu'il faut emporter.</li>
+          <li><span>3</span><b>Exporter</b> le GPX, le charger sur la montre, partir.</li>
         </ol>
-        <a class="btn" href="./app.html">Essayer maintenant</a>
       </section>
 
       <section id="tarifs" class="pricing">
-        <h2>Un prix simple</h2>
-        <p class="sub">Commencez gratuitement. Passez Pro quand vous voulez gagner du temps à chaque sortie.</p>
+        <header class="section-head">
+          <p class="kicker">Tarifs</p>
+          <h2>Gratuit pour tracer.<br /><em>Pro pour gagner du temps.</em></h2>
+        </header>
         <div class="plans">
           <div class="plan">
             <h3>Gratuit</h3>
@@ -154,37 +182,39 @@
               <li>Profil, D+, durée et difficulté</li>
               <li>Randonnées balisées à charger</li>
               <li>Export GPX vers montre et GPS</li>
-              <li>Image à partager et survol animé</li>
+              <li>Image à partager, survol animé</li>
               <li>5 parcours enregistrés</li>
             </ul>
             <a class="btn ghost" href="./app.html">Commencer</a>
           </div>
           <div class="plan pro">
-            <span class="tag">14 jours offerts</span>
             <h3>Pro</h3>
-            <p class="price">24,99 € <small>/ an</small></p>
-            <p class="alt">ou 3,99 € / mois · 14 jours d'essai sans carte</p>
+            <p class="price">24,99 € <small>par an</small></p>
+            <p class="alt">ou 3,99 € par mois · 14 jours d'essai sans carte bancaire</p>
             <ul>
-              <li><b>Tout le gratuit, plus :</b></li>
+              <li>Tout le gratuit, et :</li>
               <li>Boucle automatique</li>
-              <li>Ne jamais repasser au même endroit</li>
+              <li>Jamais deux fois le même chemin</li>
               <li>Météo, temps de passage, eau et nourriture</li>
               <li>Horaires dans le GPX (partenaire virtuel)</li>
               <li>Cartes IGN, relief ombré, pente</li>
               <li>Points d'eau et refuges sur le parcours</li>
-              <li>Parcours illimités</li>
+              <li>Parcours illimités, sur tous vos appareils</li>
             </ul>
-            <a class="btn" href="./app.html">Essayer Pro 14 jours</a>
-            <p class="founder">Offre fondateur : 19,99 €/an à vie pour les 500 premiers abonnés.</p>
+            <a class="btn light" href="./app.html">Essayer Pro 14 jours</a>
+            <p class="founder">Offre fondateur : 19,99 € par an, à vie, pour les 500 premiers.</p>
           </div>
         </div>
       </section>
 
       <section id="faq" class="faq">
-        <h2>Questions fréquentes</h2>
+        <header class="section-head">
+          <p class="kicker">Questions</p>
+          <h2>Avant de partir</h2>
+        </header>
         <details>
           <summary>Faut-il créer un compte ?</summary>
-          <p>Non pour tracer et exporter. Vos parcours sont enregistrés dans votre navigateur.</p>
+          <p>Non pour tracer et exporter. Un compte gratuit sert à retrouver vos parcours sur tous vos appareils et à démarrer l'essai Pro.</p>
         </details>
         <details>
           <summary>Avec quelles montres ça marche ?</summary>
@@ -192,27 +222,28 @@
         </details>
         <details>
           <summary>D'où viennent les randonnées balisées ?</summary>
-          <p>D'OpenStreetMap, la carte collaborative mondiale. Vérifiez toujours le balisage et les conditions sur le terrain avant de partir.</p>
+          <p>D'OpenStreetMap, la carte collaborative. Le balisage change parfois : vérifiez-le sur le terrain avant de partir.</p>
         </details>
         <details>
-          <summary>Puis-je annuler mon abonnement ?</summary>
-          <p>Oui, à tout moment, en un clic. L'essai de 14 jours ne demande pas de carte bancaire.</p>
+          <summary>Puis-je arrêter l'abonnement ?</summary>
+          <p>Oui, à tout moment depuis votre compte. Pro reste actif jusqu'à la fin de la période payée.</p>
         </details>
         <details>
           <summary>La durée estimée est-elle fiable ?</summary>
-          <p>Elle tient compte de la distance et du dénivelé, avec votre allure ou votre vitesse de marche. Réglez-les une fois et l'estimation colle à votre niveau.</p>
+          <p>Elle tient compte de la distance et du dénivelé avec votre allure ou votre vitesse de marche. Réglez-les une fois, l'estimation suit votre niveau.</p>
         </details>
       </section>
 
       <section class="final">
-        <h2>Votre prochaine sortie commence ici.</h2>
-        <a class="btn" href="./app.html">Tracer mon parcours</a>
+        <h2><em>La prochaine sortie</em><br />commence sur la carte.</h2>
+        <a class="btn" href="./app.html">Tracer un parcours</a>
       </section>
     </main>
 
     <footer>
+      <span class="mark" aria-hidden="true"><i></i><i></i></span>
       <p>© 2026 GPX Studio</p>
-      <p>Données cartographiques © contributeurs OpenStreetMap (ODbL) · Fonds IGN Géoplateforme · Relief © Esri</p>
+      <p>Données © contributeurs OpenStreetMap (ODbL) · Fonds IGN Géoplateforme · Relief © Esri</p>
       <p><a href="#">Mentions légales</a> · <a href="#">CGU</a> · <a href="#">CGV</a> · <a href="#">Confidentialité</a></p>
     </footer>
   </body>

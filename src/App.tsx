@@ -33,6 +33,7 @@ import {
   TrendingUp,
   Undo2,
   Upload,
+  UserRound,
   Waypoints,
   X,
 } from "lucide-react";
@@ -42,6 +43,7 @@ import Planner from "./components/Planner";
 import Explorer from "./components/Explorer";
 import UpgradeModal from "./components/UpgradeModal";
 import AccountModal from "./components/AccountModal";
+import { PoiIcon } from "./components/icons";
 import { useAccount } from "./lib/account";
 import { deleteRoute as deleteCloudRoute, listRoutes, RouteLimitError, saveRoute } from "./lib/cloud";
 import { FREE_ROUTE_LIMIT, PRO_FEATURES, usePlan, type ProFeature } from "./lib/plan";
@@ -90,7 +92,7 @@ import {
   type SavedRoute,
 } from "./lib/store";
 
-const ACCENTS: Record<Activity, string> = { run: "#ff5a36", hike: "#10b981" };
+const ACCENTS: Record<Activity, string> = { run: "#b4472e", hike: "#2e5a45" };
 
 const coordKey = (w: { lat: number; lng: number }) => `${w.lat.toFixed(6)},${w.lng.toFixed(6)}`;
 
@@ -215,6 +217,11 @@ export default function App() {
   const hillshade = plan.isPro && prefs.hillshade;
   const slopeColorsOn = plan.isPro && prefs.slopeColors;
   const [sheetOpen, setSheetOpen] = useState(false);
+  const sidebarRef = useRef<HTMLElement>(null);
+  // A closed bottom sheet always shows its top (distance and duration).
+  useEffect(() => {
+    if (!sheetOpen && sidebarRef.current) sidebarRef.current.scrollTop = 0;
+  }, [sheetOpen]);
   const [layersOpen, setLayersOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("trace");
@@ -875,7 +882,7 @@ export default function App() {
     activity === "run" ? `${formatPace(distance ? duration / 60 / (distance / 1000) : prefs.runPace)} /km` : null;
   const chartMarks = poisOnRoute
     .filter((p) => p.d != null)
-    .map((p) => ({ d: p.d!, emoji: POI_TYPES[p.type].emoji, name: p.name }));
+    .map((p) => ({ d: p.d!, type: p.type, name: p.name }));
 
   return (
     <div className="app" style={{ "--accent": accent } as React.CSSProperties} data-activity={activity}>
@@ -917,19 +924,20 @@ export default function App() {
       />
 
       {/* ── Sidebar ───────────────────────────────────────────────────────── */}
-      <aside className={`panel sidebar ${sheetOpen ? "open" : ""}`}>
+      <aside ref={sidebarRef} className={`panel sidebar ${sheetOpen ? "open" : ""}`}>
         <button className="sheet-handle" onClick={() => setSheetOpen((o) => !o)} aria-label="Afficher le panneau">
           <span />
         </button>
         <header className="brand">
-          <div className="logo">
-            <svg viewBox="0 0 64 64">
-              <path d="M10 46 L23 25 L32 36 L41 17 L54 46" />
-            </svg>
+          <div className="logo" aria-hidden="true">
+            <span className="mark">
+              <i />
+              <i />
+            </span>
           </div>
           <div>
             <h1>GPX Studio</h1>
-            <p>Traceur de parcours</p>
+            <p>Carnet de parcours</p>
           </div>
           <div className="brand-actions">
             {account.enabled &&
@@ -938,8 +946,8 @@ export default function App() {
                   {(account.user.email ?? "?").slice(0, 1).toUpperCase()}
                 </button>
               ) : (
-                <button className="sign-in" onClick={() => setAccountOpen({ reason: null })}>
-                  Connexion
+                <button className="icon-btn ghost" title="Se connecter" onClick={() => setAccountOpen({ reason: null })}>
+                  <UserRound size={18} />
                 </button>
               ))}
             {plan.paid ? (
@@ -977,7 +985,7 @@ export default function App() {
           <div className="hero-main">
             <span className="label">Distance</span>
             <div className="big">
-              {distance >= 1000 ? (distance / 1000).toFixed(2) : Math.round(distance)}
+              {distance >= 1000 ? (distance / 1000).toFixed(2).replace(".", ",") : Math.round(distance)}
               <small>{distance >= 1000 ? "km" : "m"}</small>
             </div>
             {distance > 0 && <span className={`level level-${level.level}`}>{level.label}</span>}
@@ -1019,7 +1027,7 @@ export default function App() {
             <div className="block">
               <div className="block-head">
                 <span>{activity === "run" ? "Allure sur le plat" : "Vitesse de marche"}</span>
-                <b>{activity === "run" ? `${formatPace(prefs.runPace)} /km` : `${prefs.hikeSpeed.toFixed(1)} km/h`}</b>
+                <b>{activity === "run" ? `${formatPace(prefs.runPace)} /km` : `${prefs.hikeSpeed.toFixed(1).replace(".", ",")} km/h`}</b>
               </div>
               {activity === "run" ? (
                 <input type="range" min={3} max={10} step={1 / 12} value={prefs.runPace} onChange={(e) => updatePrefs({ runPace: +e.target.value })} />
@@ -1049,10 +1057,10 @@ export default function App() {
                 <div className="chips">
                   <span>Préférer</span>
                   <button className={prefs.profile === "trails" ? "active" : ""} onClick={() => updatePrefs({ profile: "trails" })}>
-                    🌲 Sentiers
+                    Sentiers
                   </button>
                   <button className={prefs.profile === "roads" ? "active" : ""} onClick={() => updatePrefs({ profile: "roads" })}>
-                    🏙️ Routes & chemins
+                    Routes et chemins
                   </button>
                 </div>
               )}
@@ -1075,7 +1083,7 @@ export default function App() {
                 <div className="alert warn">
                   <Repeat size={15} />
                   <span>
-                    {formatDistance(overlaps.length)} parcourus deux fois (en jaune sur la carte).
+                    {formatDistance(overlaps.length)} parcourus deux fois, surlignés sur la carte.
                     {!prefs.avoid && (
                       <button className="link" onClick={toggleAvoid}>
                         Éviter
@@ -1112,7 +1120,7 @@ export default function App() {
                     title={POI_TYPES[t].label}
                     onClick={() => setPlacing((cur) => (cur === t ? null : t))}
                   >
-                    {POI_TYPES[t].emoji}
+                    <PoiIcon type={t} size={17} />
                   </button>
                 ))}
               </div>
@@ -1240,7 +1248,7 @@ export default function App() {
             }}
             onApplySpeed={(hikeSpeed) => {
               updatePrefs({ hikeSpeed });
-              toast(`Vitesse réglée sur ${hikeSpeed.toFixed(1)} km/h`, "success");
+              toast(`Vitesse réglée sur ${hikeSpeed.toFixed(1).replace(".", ",")} km/h`, "success");
             }}
             startPoint={waypoints[0] ?? null}
             splits={splits}
@@ -1413,16 +1421,12 @@ export default function App() {
             </div>
           </div>
           <div className="legend">
-            <i style={{ background: "#34d399" }} />
-            &lt;3%
-            <i style={{ background: "#facc15" }} />
-            &lt;7%
-            <i style={{ background: "#fb923c" }} />
-            &lt;12%
-            <i style={{ background: "#f43f5e" }} />
-            &lt;20%
-            <i style={{ background: "#a855f7" }} />
-            20%+
+            {[1, 5, 10, 15, 25].map((v, i) => (
+              <span key={v} className="legend-item">
+                <i style={{ background: slopeColor(v) }} />
+                {["< 3 %", "< 7 %", "< 12 %", "< 20 %", "20 % +"].at(i)}
+              </span>
+            ))}
           </div>
         </div>
         <ElevationChart
@@ -1439,7 +1443,7 @@ export default function App() {
 
       {placing ? (
         <div className="hint panel">
-          <span className="hint-emoji">{POI_TYPES[placing].emoji}</span>
+          <PoiIcon type={placing} size={16} />
           Cliquez sur la carte pour placer « {POI_TYPES[placing].label} » · Échap pour annuler
         </div>
       ) : (
@@ -1456,7 +1460,7 @@ export default function App() {
         <div className="replay-hud panel">
           <div>
             <span className="label">Distance</span>
-            <b>{(replay.d / 1000).toFixed(2)} km</b>
+            <b>{(replay.d / 1000).toFixed(2).replace(".", ",")} km</b>
           </div>
           <div>
             <span className="label">Altitude</span>
@@ -1584,7 +1588,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
         </ul>
         <p className="muted small">
           Le profil altimétrique est cliquable : il centre la carte sur le point survolé. Les sections parcourues deux fois sont
-          surlignées en jaune sur la carte et sur le profil.
+          surlignées sur la carte et sur le profil.
         </p>
       </div>
     </div>

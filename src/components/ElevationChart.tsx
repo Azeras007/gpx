@@ -1,13 +1,14 @@
 import { useMemo, useRef, useState, useLayoutEffect } from "react";
 import type { ProfilePoint } from "../lib/geo";
-import { formatDistance, slopeColor } from "../lib/geo";
+import { formatDistance, slopeColor, type PoiType } from "../lib/geo";
+import { POI_ICONS } from "./icons";
 
 interface Props {
   profile: ProfilePoint[];
   accent: string;
   loading: boolean;
   /** Points of interest located along the route (distance in meters). */
-  marks: { d: number; emoji: string; name: string }[];
+  marks: { d: number; type: PoiType; name: string }[];
   /** Distance ranges where the route passes again over itself. */
   overlaps: [number, number][];
   /** Cursor driven from outside (hovering the route on the map, replay). */
@@ -119,8 +120,8 @@ export default function ElevationChart({ profile, accent, loading, marks, overla
         <svg width={size.w} height={size.h}>
           <defs>
             <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={accent} stopOpacity="0.45" />
-              <stop offset="100%" stopColor={accent} stopOpacity="0.02" />
+              <stop offset="0%" stopColor={accent} stopOpacity="0.22" />
+              <stop offset="100%" stopColor={accent} stopOpacity="0.03" />
             </linearGradient>
           </defs>
           {geom.yTicks.map((v) => (
@@ -133,7 +134,7 @@ export default function ElevationChart({ profile, accent, loading, marks, overla
           ))}
           {geom.xTicks.map((v) => (
             <text key={v} x={geom.x(v)} y={size.h - 6} textAnchor="middle" className="tick">
-              {v >= 1000 ? `${+(v / 1000).toFixed(1)} km` : `${Math.round(v)} m`}
+              {v >= 1000 ? `${String(+(v / 1000).toFixed(1)).replace(".", ",")} km` : `${Math.round(v)} m`}
             </text>
           ))}
           {overlaps.map(([a, b]) => (
@@ -141,19 +142,21 @@ export default function ElevationChart({ profile, accent, loading, marks, overla
           ))}
           <path d={geom.area} fill="url(#area)" />
           {geom.runs.map((r, i) => (
-            <path key={i} d={r.d} fill="none" stroke={r.color} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+            <path key={i} d={r.d} fill="none" stroke={r.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
           ))}
           {marks
             .filter((m) => m.d <= geom.total)
-            .map((m, i) => (
-              <g key={i} transform={`translate(${geom.x(m.d)},${PAD.t})`}>
-                <title>{m.name}</title>
-                <line y1={10} y2={geom.ih} className="poi-line" />
-                <text y={8} textAnchor="middle" fontSize={13}>
-                  {m.emoji}
-                </text>
-              </g>
-            ))}
+            .map((m, i) => {
+              const Icon = POI_ICONS[m.type];
+              return (
+                <g key={i} transform={`translate(${geom.x(m.d)},${PAD.t})`} className="poi-mark">
+                  <title>{m.name}</title>
+                  <line y1={12} y2={geom.ih} className="poi-line" />
+                  <circle r={8} cy={2} fill="var(--card)" stroke="var(--ink)" strokeWidth={1} />
+                  <Icon x={-5} y={-3} width={10} height={10} strokeWidth={2.2} />
+                </g>
+              );
+            })}
           {hp && (
             <g>
               <line x1={geom.x(hp.d)} x2={geom.x(hp.d)} y1={PAD.t} y2={PAD.t + geom.ih} className="cursor" />
@@ -171,7 +174,7 @@ export default function ElevationChart({ profile, accent, loading, marks, overla
           <span>{formatDistance(hp.d)}</span>
           <span style={{ color: slopeColor(slope) }}>
             {slope > 0 ? "+" : ""}
-            {slope.toFixed(1)} %
+            {slope.toFixed(1).replace(".", ",")} %
           </span>
         </div>
       )}

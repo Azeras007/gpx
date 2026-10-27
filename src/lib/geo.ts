@@ -455,11 +455,11 @@ export function decodePolyline(str: string): LatLng[] {
 /** Slope color: green (flat) → amber → red → purple (very steep). */
 export function slopeColor(pct: number) {
   const a = Math.abs(pct);
-  if (a < 3) return "#34d399";
-  if (a < 7) return "#facc15";
-  if (a < 12) return "#fb923c";
-  if (a < 20) return "#f43f5e";
-  return "#a855f7";
+  if (a < 3) return "#5f8f6f";
+  if (a < 7) return "#c9a23a";
+  if (a < 12) return "#d07a3b";
+  if (a < 20) return "#b4472e";
+  return "#6b3a5e";
 }
 
 /** Point located `d` meters along the track. */
@@ -482,7 +482,7 @@ export const uid = () => Math.random().toString(36).slice(2, 10);
 
 export function formatDistance(m: number): string {
   if (m < 1000) return `${Math.round(m)} m`;
-  return `${(m / 1000).toFixed(m < 10000 ? 2 : 1)} km`;
+  return `${(m / 1000).toFixed(m < 10000 ? 2 : 1).replace(".", ",")} km`;
 }
 
 export function formatDuration(s: number): string {

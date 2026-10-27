@@ -3,14 +3,15 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { POI_TYPES, type LatLng, type Poi, type Waypoint } from "../lib/geo";
 import type { OsmPoi } from "../lib/services";
+import { OSM_ICONS, POI_ICONS, iconMarkup } from "./icons";
 
-export const OSM_KINDS: Record<OsmPoi["kind"], { label: string; emoji: string }> = {
-  water: { label: "Point d'eau", emoji: "💧" },
-  hut: { label: "Refuge", emoji: "🛖" },
-  shelter: { label: "Abri", emoji: "⛺" },
-  peak: { label: "Sommet", emoji: "⛰️" },
-  view: { label: "Point de vue", emoji: "📷" },
-  toilets: { label: "Toilettes", emoji: "🚻" },
+export const OSM_KINDS: Record<OsmPoi["kind"], { label: string }> = {
+  water: { label: "Point d'eau" },
+  hut: { label: "Refuge" },
+  shelter: { label: "Abri" },
+  peak: { label: "Sommet" },
+  view: { label: "Point de vue" },
+  toilets: { label: "Toilettes" },
 };
 
 export const BASE_LAYERS: Record<string, { label: string; url: string; attribution: string; maxZoom: number }> = {
@@ -309,8 +310,8 @@ export default function MapView(props: Props) {
     g.clearLayers();
     if (!props.preview || props.preview.length < 2) return;
     L.polyline(props.preview, { color: "#ffffff", weight: 10, opacity: 0.9, lineCap: "round", interactive: false }).addTo(g);
-    L.polyline(props.preview, { color: "#2563eb", weight: 5, dashArray: "10 8", lineCap: "round", interactive: false }).addTo(g);
-    L.circleMarker(props.preview[0], { radius: 7, color: "#fff", weight: 3, fillColor: "#10b981", fillOpacity: 1, interactive: false }).addTo(g);
+    L.polyline(props.preview, { color: "#1d1c18", weight: 4, dashArray: "8 7", lineCap: "round", interactive: false }).addTo(g);
+    L.circleMarker(props.preview[0], { radius: 7, color: "#fff", weight: 3, fillColor: "#2e5a45", fillOpacity: 1, interactive: false }).addTo(g);
     map.current!.fitBounds(L.latLngBounds(props.preview), {
       paddingTopLeft: window.innerWidth < 860 ? [30, 90] : [440, 90],
       paddingBottomRight: window.innerWidth < 860 ? [30, 260] : [90, 260],
@@ -326,7 +327,7 @@ export default function MapView(props: Props) {
       return;
     }
     if (!replayLine.current) {
-      replayLine.current = L.polyline([], { color: "#ffffff", weight: 4, opacity: 0.95, interactive: false, className: "replay-line" }).addTo(m);
+      replayLine.current = L.polyline([], { color: "#1d1c18", weight: 3, opacity: 0.9, interactive: false, className: "replay-line" }).addTo(m);
     }
     replayLine.current.setLatLngs(props.replayTrail);
   }, [props.replayTrail]);
@@ -338,7 +339,7 @@ export default function MapView(props: Props) {
     props.osmPois.forEach((p) => {
       const k = OSM_KINDS[p.kind];
       const mk = L.marker([p.lat, p.lng], {
-        icon: L.divIcon({ className: "", html: `<div class="osm-poi">${k.emoji}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] }),
+        icon: L.divIcon({ className: "", html: `<div class="osm-poi">${iconMarkup(OSM_ICONS[p.kind], 13)}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] }),
         zIndexOffset: 500,
       });
       const title = (p.name || k.label).replace(/[<>&]/g, "");
@@ -357,8 +358,8 @@ export default function MapView(props: Props) {
     const g = overlapGroup.current!;
     g.clearLayers();
     props.overlaps.forEach((line) => {
-      L.polyline(line, { color: "#111827", weight: 9, opacity: 0.55, lineCap: "round", interactive: false }).addTo(g);
-      L.polyline(line, { color: "#facc15", weight: 5, dashArray: "1 9", lineCap: "round", interactive: false }).addTo(g);
+      L.polyline(line, { color: "#fbf9f4", weight: 9, opacity: 0.9, lineCap: "round", interactive: false }).addTo(g);
+      L.polyline(line, { color: "#a8761c", weight: 4, dashArray: "2 7", lineCap: "round", interactive: false }).addTo(g);
     });
   }, [props.overlaps]);
 
@@ -372,9 +373,9 @@ export default function MapView(props: Props) {
         zIndexOffset: 2000,
         icon: L.divIcon({
           className: "",
-          html: `<div class="poi poi-${poi.type}"><span>${POI_TYPES[poi.type].emoji}</span></div>`,
-          iconSize: [34, 40],
-          iconAnchor: [17, 38],
+          html: `<div class="poi poi-${poi.type}">${iconMarkup(POI_ICONS[poi.type], 15)}</div>`,
+          iconSize: [30, 30],
+          iconAnchor: [15, 37],
         }),
       });
       mk.on("dragend", () => {
@@ -386,7 +387,7 @@ export default function MapView(props: Props) {
       const name = poi.name.replace(/[<>&]/g, "");
       mk.bindTooltip(`${name}<br><span>${POI_TYPES[poi.type].label} · double-clic pour supprimer</span>`, {
         direction: "top",
-        offset: [0, -40],
+        offset: [0, -38],
         className: "wp-tip",
       });
       mk.addTo(g);

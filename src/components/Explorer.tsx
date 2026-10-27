@@ -131,7 +131,7 @@ export default function Explorer({ map, previewId, onPreview, onUse, onError }: 
                       if (g) onPreview(t, g);
                     }}
                   >
-                    <span className={`trail-badge k-${t.kind}`} title={KIND_HINT[t.kind]}>
+                    <span className={`trail-badge k-${t.kind}`} title={KIND_HINT[t.kind]} data-kind={t.kind}>
                       {t.kind}
                     </span>
                     <span className="trail-text">
