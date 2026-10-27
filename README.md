@@ -40,10 +40,10 @@ Avec Supabase et Stripe configurés, le statut Pro est décidé **côté serveur
 limite de parcours appliquée par la base). Sans configuration, l'app tourne en mode local de démonstration.
 Toute la mise en place est décrite dans **[SETUP.md](SETUP.md)**.
 
-## Usage personnel
+## Tout est gratuit pour l'instant
 
-Pour héberger votre propre copie sans abonnement, définissez `VITE_PERSONAL=true` (dans `.env.local` ou dans les
-variables d'environnement de l'hébergeur) : toutes les fonctions sont débloquées et les écrans d'offre disparaissent.
+Toutes les fonctions sont débloquées pour tout le monde et les écrans d'offre sont masqués. Pour réactiver
+l'offre gratuite / Pro, définissez `VITE_PAYWALL=true` (dans `.env.local` ou dans les variables de l'hébergeur).
 
 ## Pages
 
