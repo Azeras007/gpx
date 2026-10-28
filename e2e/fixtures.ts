@@ -73,7 +73,13 @@ async function install(page: Page, f: Fakes) {
     if (f.routingDown) return r.fulfill({ status: 503, body: "down" });
     const m = r.request().url().match(/lonlats=([\d.-]+),([\d.-]+)\|([\d.-]+),([\d.-]+)/)!;
     const coords = fakePath([+m[2], +m[1]], [+m[4], +m[3]]);
-    return json(r, { type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: coords } }] });
+    const messages = [
+      ["Longitude", "Latitude", "Elevation", "Distance", "CostPerKm", "WayTags"],
+      ["0", "0", "0", "300", "1000", "highway=residential surface=asphalt"],
+      ["0", "0", "0", "500", "1000", "highway=path"],
+      ["0", "0", "0", "200", "1000", "highway=track tracktype=grade3"],
+    ];
+    return json(r, { type: "FeatureCollection", features: [{ type: "Feature", properties: { messages }, geometry: { type: "LineString", coordinates: coords } }] });
   });
   await page.route(/routing\.openstreetmap\.de/, (r) => {
     f.routingCalls.push(r.request().url());

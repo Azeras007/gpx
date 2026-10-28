@@ -4,10 +4,13 @@ import {
   ArrowLeftRight,
   ArrowUpDown,
   CalendarClock,
+  CloudOff,
+  MonitorDown,
   Compass,
   Clock,
   Download,
   MoveHorizontal,
+  Navigation,
   Footprints,
   FolderOpen,
   Gauge,
@@ -89,6 +92,9 @@ import { buildExport, downloadFile, EXPORT_FORMATS, parseGpx, slugify, type Expo
 import { fetchElevations, fetchOsmPois, routeLeg, searchPlaces, type Nogo, type OsmPoi, type Place } from "./lib/services";
 import { renderCard } from "./lib/shareImage";
 import { breadcrumb, reportError, setReportContext } from "./lib/report";
+import { addMix, emptyMix, shares, SURFACES, type SurfaceMix } from "./lib/surface";
+import { cacheTiles, tilesAlong, tileUrl, useInstallPrompt, useOnline } from "./lib/offline";
+import { gainLeft, isOffRoute, progressOn } from "./lib/live";
 import { decodeRoute, encodeRoute } from "./lib/share";
 import {
   loadDraft,
@@ -147,6 +153,8 @@ interface LoopRequest {
   /** Ratio between the circle drawn and the target, tuned after each try. */
   k: number;
   attempts: number;
+  /** Where the loop starts; else the route's start or the map center. */
+  start?: LatLng;
 }
 
 function initialRoute() {
@@ -184,6 +192,8 @@ export default function App() {
   const library = cloud ? (cloudLibrary ?? []) : localLibrary;
   const [accountOpen, setAccountOpen] = useState<{ reason: string | null } | null>(null);
   const [legCache, setLegCache] = useState<Map<string, LegState>>(() => new Map());
+  /** Kind of ground of each routed leg, same keys as the leg cache. */
+  const [surfaceCache, setSurfaceCache] = useState<Map<string, SurfaceMix>>(() => new Map());
   const [profile, setProfile] = useState<ProfilePoint[]>([]);
   const [eleLoading, setEleLoading] = useState(false);
   const [hover, setHover] = useState<LatLng | null>(null);
@@ -334,6 +344,18 @@ export default function App() {
     return { legs, pendingLegs };
   }, [waypoints, legCache, legKeys]);
 
+  // Back online: legs that failed meanwhile are routed again
+  const online = useOnline();
+  useEffect(() => {
+    if (!online) return;
+    setLegCache((c) => {
+      if (![...c.values()].includes("error")) return c;
+      const next = new Map(c);
+      for (const [k, v] of next) if (v === "error") next.delete(k);
+      return next;
+    });
+  }, [online]);
+
   const inflight = useRef(new Set<string>());
   useEffect(() => {
     for (let i = 1; i < waypoints.length; i++) {
@@ -353,11 +375,13 @@ export default function App() {
       routeLeg([a.lat, a.lng], [b.lat, b.lng], { profile: prefs.profile, nogos })
         .then((r) => {
           setLegCache((c) => new Map(c).set(k, r.coords));
+          if (r.surface) setSurfaceCache((c) => new Map(c).set(k, r.surface!));
           if (r.degraded === "no-avoid") toast("Impossible d'éviter les passages déjà faits sur un segment.", "error");
         })
         .catch((e) => {
-          reportError(e, "routage", "warn", { profil: prefs.profile, evitement: nogos.length > 0 });
           setLegCache((c) => new Map(c).set(k, "error"));
+          if (!navigator.onLine) return toast("Hors ligne : segment en ligne droite, il suivra les chemins au retour du réseau.", "error");
+          reportError(e, "routage", "warn", { profil: prefs.profile, evitement: nogos.length > 0 });
           toast("Aucun chemin trouvé pour ce segment — tracé en ligne droite.", "error");
         })
         .finally(() => inflight.current.delete(k));
@@ -418,6 +442,19 @@ export default function App() {
     [activity, liveProfile, distance, prefs.runPace, prefs.hikeSpeed, duration],
   );
 
+  const surface = useMemo(() => {
+    let mix = emptyMix();
+    let known = false;
+    for (let i = 1; i < waypoints.length; i++) {
+      const m = waypoints[i].mode === "snap" ? surfaceCache.get(legKeys[i - 1]) : undefined;
+      if (m) {
+        mix = addMix(mix, m);
+        known = true;
+      }
+    }
+    return known && distance > 0 ? shares(mix, distance) : null;
+  }, [waypoints, surfaceCache, legKeys, distance]);
+
   const kmMarks = useMemo(() => {
     const step = distance < 25000 ? 1000 : distance < 60000 ? 2000 : 5000;
     const marks: { pos: LatLng; km: number }[] = [];
@@ -443,6 +480,7 @@ export default function App() {
     mobile: isMobile,
     fond: baseLayer,
     survol: replay ? (replay.playing ? "en cours" : "en pause") : "non",
+    suivi_direct: liveOn,
     calcul: routing,
     en_ligne: navigator.onLine,
   }));
@@ -517,6 +555,7 @@ export default function App() {
   const startReplay = () => {
     if (track.length < 2) return;
     setSheet("peek");
+    setLiveOn(false);
     const from = replay && replay.d < distance - 1 ? replay.d : 0;
     const m = mapRef.current;
     if (m && m.getZoom() < 14) m.setView(pointAt(track, cum, from), 15, { animate: false });
@@ -539,6 +578,96 @@ export default function App() {
     return out;
   }, [replay, track, cum]);
   const replayEle = replay ? eleAt(liveProfile, replay.d) : null;
+
+  // ── Live position while out on the route ───────────────────────────────────
+  const [liveOn, setLiveOn] = useState(false);
+  const [live, setLive] = useState<{ pos: LatLng; acc: number; heading: number | null; d: number | null; off: number; follow: boolean } | null>(null);
+  const liveRef = useRef(live);
+  liveRef.current = live;
+  const trackRef = useRef({ track, cum, distance });
+  trackRef.current = { track, cum, distance };
+  useEffect(() => {
+    if (!liveOn) {
+      setLive(null);
+      return;
+    }
+    if (!navigator.geolocation) {
+      toast("Géolocalisation indisponible sur cet appareil", "error");
+      setLiveOn(false);
+      return;
+    }
+    let wake: { release: () => Promise<void> } | null = null;
+    const keepAwake = async () => {
+      try {
+        // Keeps the screen on while following the route
+        wake = await (navigator as unknown as { wakeLock?: { request: (t: "screen") => Promise<typeof wake> } }).wakeLock?.request("screen") ?? null;
+      } catch {
+        /* not supported or refused: the screen may turn off */
+      }
+    };
+    keepAwake();
+    const onVisible = () => document.visibilityState === "visible" && keepAwake();
+    document.addEventListener("visibilitychange", onVisible);
+    const id = navigator.geolocation.watchPosition(
+      (p) => {
+        const pos: LatLng = [p.coords.latitude, p.coords.longitude];
+        const { track: t, cum: c } = trackRef.current;
+        const prev = liveRef.current;
+        const at = t.length > 1 ? progressOn(t, c, pos, prev?.d ?? null) : null;
+        const next = {
+          pos,
+          acc: p.coords.accuracy,
+          heading: p.coords.heading != null && isFinite(p.coords.heading) && (p.coords.speed ?? 0) > 0.5 ? p.coords.heading : null,
+          d: at ? at.d : null,
+          off: at ? at.off : 0,
+          follow: prev?.follow ?? true,
+        };
+        if (next.follow) mapRef.current?.panTo(pos, { animate: true, duration: 0.5 });
+        setLive(next);
+      },
+      (err) => {
+        toast(
+          err.code === err.PERMISSION_DENIED ? "Position refusée : autorisez la localisation pour ce site." : "Position introuvable pour le moment, réessayez à découvert.",
+          "error",
+        );
+        if (err.code === err.PERMISSION_DENIED) setLiveOn(false);
+      },
+      { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 },
+    );
+    return () => {
+      navigator.geolocation.clearWatch(id);
+      document.removeEventListener("visibilitychange", onVisible);
+      wake?.release().catch(() => {});
+    };
+  }, [liveOn, toast]);
+
+  const liveOff = live && live.d != null ? isOffRoute(live.off, live.acc) : false;
+  const wasOff = useRef(false);
+  const arrived = useRef(false);
+  useEffect(() => {
+    if (!live || live.d == null) {
+      wasOff.current = false;
+      arrived.current = false;
+      return;
+    }
+    if (liveOff && !wasOff.current) {
+      navigator.vibrate?.([200, 100, 200]);
+      toast(`Vous êtes à ${Math.round(live.off)} m du parcours`, "error");
+    }
+    wasOff.current = liveOff;
+    if (!arrived.current && distance > 0 && live.d > distance - 40 && !liveOff) {
+      arrived.current = true;
+      navigator.vibrate?.(400);
+      toast("Arrivée ! Bravo 🎉", "success");
+    }
+  }, [live, liveOff, distance, toast]);
+
+  const startLive = () => {
+    setReplay(null);
+    setSheet("peek");
+    setLiveOn(true);
+    toast(track.length > 1 ? "Suivi en direct : votre position et ce qu'il reste à parcourir" : "Suivi de votre position en direct");
+  };
 
   // ── OpenStreetMap amenities around the route ───────────────────────────────
   const findOsmPois = async () => {
@@ -651,7 +780,7 @@ export default function App() {
   const generateLoop = useCallback(
     (req: LoopRequest) => {
       const m = mapRef.current;
-      const s: LatLng = waypoints[0] ? [waypoints[0].lat, waypoints[0].lng] : m ? [m.getCenter().lat, m.getCenter().lng] : [45.92, 6.87];
+      const s: LatLng = req.start ?? (waypoints[0] ? [waypoints[0].lat, waypoints[0].lng] : m ? [m.getCenter().lat, m.getCenter().lng] : [45.92, 6.87]);
       // Waypoints sit on a circle that goes through the start; paths are never
       // straight, so the circle is smaller than the target distance.
       const radius = (req.target * req.k) / (2 * Math.PI);
@@ -678,6 +807,23 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loop, routing, distance]);
+
+  const loopFromHere = () => {
+    if (needPro("loop")) return;
+    if (!navigator.geolocation) return toast("Géolocalisation indisponible", "error");
+    toast("Localisation…");
+    navigator.geolocation.getCurrentPosition(
+      (p) => {
+        const start: LatLng = [p.coords.latitude, p.coords.longitude];
+        mapRef.current?.setView(start, 14);
+        setCurrentId(null);
+        setPois([]);
+        generateLoop({ target: loopKm * 1000, bearing: Math.random() * 360, k: 0.8, attempts: 0, start });
+      },
+      () => toast("Impossible de vous localiser : autorisez la localisation ou placez un départ sur la carte.", "error"),
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 },
+    );
+  };
 
   const fitTo = useCallback((pts: { lat: number; lng: number }[]) => {
     const m = mapRef.current;
@@ -869,6 +1015,35 @@ export default function App() {
     }
   };
 
+  // ── Map for use without network ─────────────────────────────────────────────
+  const [offlineMap, setOfflineMap] = useState<{ done: number; total: number } | null>(null);
+  const downloadMap = async () => {
+    if (track.length < 2) return toast("Tracez un parcours d'abord.", "error");
+    const cfg = BASE_LAYERS[baseLayer] ?? BASE_LAYERS.topo;
+    let maxZoom = Math.min(16, cfg.maxZoom);
+    let tiles = tilesAlong(track, 11, maxZoom);
+    // A very long route: stop a zoom level earlier rather than download thousands of tiles
+    while (tiles.length > 2500 && maxZoom > 13) tiles = tilesAlong(track, 11, --maxZoom);
+    if (tiles.length > 2500) return toast("Parcours trop étendu pour la carte hors ligne.", "error");
+    const urls = tiles.map((t) => tileUrl(cfg.url, t));
+    if (prefs.trails) urls.push(...tiles.map((t) => tileUrl("https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png", t)));
+    setOfflineMap({ done: 0, total: urls.length });
+    try {
+      const { failed } = await cacheTiles(urls, (done, total) => setOfflineMap({ done, total }));
+      toast(
+        failed > urls.length / 4
+          ? "Une partie de la carte n'a pas pu être téléchargée, réessayez avec une meilleure connexion."
+          : `Carte du parcours disponible hors ligne (${cfg.label}, jusqu'au zoom ${maxZoom})`,
+        failed > urls.length / 4 ? "error" : "success",
+      );
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setOfflineMap(null);
+    }
+  };
+  const installer = useInstallPrompt();
+
   // Drop a GPX file anywhere on the page to import it
   useEffect(() => {
     let depth = 0;
@@ -987,6 +1162,25 @@ export default function App() {
     [tab, tours, preview],
   );
 
+  /** Estimated time (s) to finish from `d`, following the per-km plan. */
+  const remainingTime = (d: number) => {
+    if (!splits.length) return distance ? duration * (1 - d / distance) : 0;
+    let start = 0;
+    let at = 0;
+    for (const s of splits) {
+      if (d <= start + s.length) {
+        at = s.elapsed - s.time + s.time * ((d - start) / (s.length || 1));
+        break;
+      }
+      start += s.length;
+      at = s.elapsed;
+    }
+    return Math.max(0, duration - at);
+  };
+  const clockIn = (sec: number) => new Date(Date.now() + sec * 1000).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  const nextPoi = (d: number) =>
+    poisOnRoute.filter((p) => p.d != null && p.d > d + 20).sort((a, b) => a.d! - b.d!)[0] ?? null;
+
   const chartMarks = poisOnRoute
     .filter((p) => p.d != null)
     .map((p) => ({ d: p.d!, type: p.type, name: p.name }));
@@ -1074,7 +1268,11 @@ export default function App() {
           seekReplay(at.d);
           return pointAt(track, cum, at.d);
         }}
-        onUserPan={() => setReplay((r) => (r?.playing && r.follow ? { ...r, follow: false } : r))}
+        onUserPan={() => {
+          setReplay((r) => (r?.playing && r.follow ? { ...r, follow: false } : r));
+          setLive((l) => (l?.follow ? { ...l, follow: false } : l));
+        }}
+        me={live ? { pos: live.pos, acc: live.acc, heading: live.heading, off: liveOff } : null}
         preview={preview?.line ?? null}
         tours={mapTours}
         onTourClick={(id) => {
@@ -1190,6 +1388,17 @@ export default function App() {
                 Passer Pro
               </button>
             )}
+            {installer.canInstall && (
+              <button
+                className="icon-btn ghost"
+                title="Installer l'application"
+                onClick={async () => {
+                  if (await installer.install()) toast("GPX Studio est installé sur cet appareil", "success");
+                }}
+              >
+                <MonitorDown size={18} />
+              </button>
+            )}
             <button className="icon-btn ghost" title="Donner mon avis" onClick={() => setFeedbackOpen(true)}>
               <MessageSquarePlus size={18} />
             </button>
@@ -1267,6 +1476,31 @@ export default function App() {
                 sub={`sur ${formatDistance(stats.steepest.over)} · ${formatDegrees(stats.steepest.grade)}`}
               />
             </div>
+
+            {surface && !routing && (
+              <div className="block surface">
+                <div className="block-head">
+                  <span>Revêtement</span>
+                </div>
+                <div className="surface-bar" role="img" aria-label={surface.map((s) => `${SURFACES[s.kind].label} ${Math.round(s.pct)} %`).join(", ")}>
+                  {surface
+                    .filter((s) => s.pct >= 0.5)
+                    .map((s) => (
+                      <i key={s.kind} style={{ width: `${s.pct}%`, background: SURFACES[s.kind].color }} title={`${SURFACES[s.kind].label} : ${formatDistance(s.meters)}`} />
+                    ))}
+                </div>
+                <div className="surface-legend">
+                  {surface
+                    .filter((s) => s.pct >= 0.5)
+                    .map((s) => (
+                      <span key={s.kind} title={SURFACES[s.kind].hint}>
+                        <i style={{ background: SURFACES[s.kind].color }} />
+                        {SURFACES[s.kind].label} <b>{formatDistance(s.meters)}</b>
+                      </span>
+                    ))}
+                </div>
+              </div>
+            )}
 
             <div className="block">
               <div className="block-head">
@@ -1403,6 +1637,9 @@ export default function App() {
                 {waypoints.length > 1 ? "Générer une autre boucle" : "Générer la boucle"}
                 {!plan.isPro && <span className="pro-pill">PRO</span>}
               </button>
+              <button className="link loop-here" disabled={loop != null} onClick={loopFromHere}>
+                <LocateFixed size={13} /> Depuis ma position
+              </button>
               <p className="muted small">Depuis votre point de départ (ou le centre de la carte), sans repasser par les mêmes chemins.</p>
             </div>
 
@@ -1447,6 +1684,10 @@ export default function App() {
                   <ImageDown size={16} /> Image
                 </button>
               </div>
+              <button className="secondary wide" onClick={downloadMap} disabled={track.length < 2 || offlineMap != null || !online}>
+                {offlineMap ? <span className="spinner" /> : <CloudOff size={16} />}
+                {offlineMap ? `Carte hors ligne… ${Math.round((offlineMap.done / Math.max(1, offlineMap.total)) * 100)} %` : "Garder la carte du parcours hors ligne"}
+              </button>
             </div>
           </>
         )}
@@ -1638,6 +1879,13 @@ export default function App() {
         <button className="icon-btn panel" title="Me localiser" onClick={locate}>
           <LocateFixed size={18} />
         </button>
+        <button
+          className={`icon-btn panel ${liveOn ? "on" : ""}`}
+          title={liveOn ? "Arrêter le suivi en direct" : "Suivre ma position en direct"}
+          onClick={() => (liveOn ? setLiveOn(false) : startLive())}
+        >
+          <Navigation size={18} />
+        </button>
         <button className="icon-btn panel" title="Recentrer sur le parcours (F)" onClick={() => fitTo(waypoints)} disabled={!waypoints.length}>
           <Maximize2 size={18} />
         </button>
@@ -1679,7 +1927,7 @@ export default function App() {
         </div>
       )}
 
-      {isMobile && sheet === "peek" && !preview && !replay && (
+      {isMobile && sheet === "peek" && !preview && !replay && !liveOn && (
         <div className="quickbar panel" style={{ bottom: sheetHeights.peek + 12 }}>
           <button onClick={undo} disabled={!canUndo}>
             <Undo2 size={19} />
@@ -1785,8 +2033,80 @@ export default function App() {
         </div>
       )}
 
+      {liveOn && (
+        <div className={`replay-hud live-hud panel ${liveOff ? "off" : ""}`}>
+          {!live ? (
+            <div className="live-wait">
+              <span className="spinner" /> Recherche de votre position…
+            </div>
+          ) : live.d == null ? (
+            <div className="live-wait">Position à ± {Math.round(live.acc)} m — tracez un parcours pour suivre votre progression.</div>
+          ) : (
+            <>
+              <div className="replay-figures">
+                <div>
+                  <span className="label">Reste</span>
+                  <b>{formatDistance(Math.max(0, distance - live.d))}</b>
+                </div>
+                <div>
+                  <span className="label">D+ restant</span>
+                  <b>{Math.round(gainLeft(smoothProfile(liveProfile, 80), live.d))} m</b>
+                </div>
+                <div>
+                  <span className="label">Arrivée</span>
+                  <b>{clockIn(remainingTime(live.d))}</b>
+                </div>
+              </div>
+              <div className="replay-progress">
+                <span style={{ width: `${distance ? Math.min(100, (live.d / distance) * 100) : 0}%` }} />
+              </div>
+              {liveOff ? (
+                <div className="live-alert">Hors parcours : à {Math.round(live.off)} m du tracé</div>
+              ) : nextPoi(live.d) ? (
+                <div className="live-next">
+                  {(() => {
+                    const n = nextPoi(live.d)!;
+                    return (
+                      <>
+                        <PoiIcon type={n.type} size={14} /> {n.name} dans {formatDistance(n.d! - live.d)}
+                      </>
+                    );
+                  })()}
+                </div>
+              ) : null}
+            </>
+          )}
+          <div className="replay-buttons">
+            <span className="muted small">{live ? `GPS ± ${Math.round(live.acc)} m` : ""}</span>
+            {live && !live.follow && (
+              <button
+                className="speed"
+                onClick={() => {
+                  setLive({ ...live, follow: true });
+                  mapRef.current?.panTo(live.pos);
+                }}
+                title="Recentrer la carte sur ma position"
+              >
+                <LocateFixed size={13} /> Suivre
+              </button>
+            )}
+            <button className="icon-btn ghost" title="Arrêter le suivi en direct" onClick={() => setLiveOn(false)}>
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!online && (
+        <div className="offline-banner panel" role="status">
+          <CloudOff size={15} />
+          <span>Hors ligne : vos parcours et la carte déjà vue restent disponibles. Itinéraires, météo et exploration reviendront avec le réseau.</span>
+        </div>
+      )}
+
       {helpOpen && (
         <HelpModal
+          ios={installer.ios}
           onClose={() => setHelpOpen(false)}
           onFeedback={() => {
             setHelpOpen(false);
@@ -1877,7 +2197,7 @@ const SHORTCUTS: [string, string][] = [
   ["Échap", "Annuler le placement d'un repère"],
 ];
 
-function HelpModal({ onClose, onFeedback }: { onClose: () => void; onFeedback: () => void }) {
+function HelpModal({ onClose, onFeedback, ios }: { onClose: () => void; onFeedback: () => void; ios: boolean }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal panel" onClick={(e) => e.stopPropagation()}>
@@ -1899,6 +2219,11 @@ function HelpModal({ onClose, onFeedback }: { onClose: () => void; onFeedback: (
           Le profil altimétrique est cliquable : il centre la carte sur le point survolé. Les sections parcourues deux fois sont
           surlignées sur la carte et sur le profil.
         </p>
+        {ios && (
+          <p className="muted small">
+            Sur iPhone : touchez <b>Partager</b> puis <b>Sur l'écran d'accueil</b> pour installer GPX Studio comme une application, utilisable hors ligne.
+          </p>
+        )}
         <p className="muted small">
           Un bug, une idée ?{" "}
           <button className="link" onClick={onFeedback}>

@@ -1,5 +1,6 @@
 import { eleAt, haversine, type LatLng, type ProfilePoint } from "./geo";
 import { openMeteoBlockedUntil } from "./weather";
+import { mixFromBrouter, type SurfaceMix } from "./surface";
 
 export type RoutingProfile = "trails" | "roads";
 
@@ -13,6 +14,8 @@ export interface LegResult {
   coords: LatLng[];
   /** Set when the preferred engine failed and another one was used. */
   degraded?: "no-avoid" | "fallback";
+  /** Meters on each kind of ground, when the engine tells (BRouter). */
+  surface?: SurfaceMix;
 }
 
 /**
@@ -22,7 +25,7 @@ export interface LegResult {
  */
 const NOGO_WEIGHT = 800;
 
-async function brouter(a: LatLng, b: LatLng, nogos: Nogo[], signal?: AbortSignal): Promise<LatLng[]> {
+async function brouter(a: LatLng, b: LatLng, nogos: Nogo[], signal?: AbortSignal): Promise<{ coords: LatLng[]; surface?: SurfaceMix }> {
   let url =
     `https://brouter.de/brouter?lonlats=${a[1].toFixed(6)},${a[0].toFixed(6)}|${b[1].toFixed(6)},${b[0].toFixed(6)}` +
     `&profile=hiking-mountain&alternativeidx=0&format=geojson`;
@@ -32,12 +35,16 @@ async function brouter(a: LatLng, b: LatLng, nogos: Nogo[], signal?: AbortSignal
   const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`BRouter HTTP ${res.status}`);
   const json = await res.json();
-  const coords = json.features?.[0]?.geometry?.coordinates as number[][] | undefined;
+  const feature = json.features?.[0];
+  const coords = feature?.geometry?.coordinates as number[][] | undefined;
   if (!coords?.length) throw new Error("Aucun itinéraire");
-  return [a, ...coords.map(([lng, lat]) => [lat, lng] as LatLng), b];
+  return {
+    coords: [a, ...coords.map(([lng, lat]) => [lat, lng] as LatLng), b],
+    surface: mixFromBrouter(feature?.properties?.messages) ?? undefined,
+  };
 }
 
-async function osrm(a: LatLng, b: LatLng, signal?: AbortSignal): Promise<LatLng[]> {
+async function osrm(a: LatLng, b: LatLng, signal?: AbortSignal): Promise<{ coords: LatLng[] }> {
   const coords = `${a[1]},${a[0]};${b[1]},${b[0]}`;
   const url = `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coords}?overview=full&geometries=geojson`;
   const res = await fetch(url, { signal });
@@ -47,7 +54,7 @@ async function osrm(a: LatLng, b: LatLng, signal?: AbortSignal): Promise<LatLng[
   if (!route) throw new Error("Aucun itinéraire");
   const line: LatLng[] = route.geometry.coordinates.map(([lng, lat]: [number, number]) => [lat, lng]);
   // Glue the snapped line to the exact clicked points so legs connect cleanly.
-  return [a, ...line, b];
+  return { coords: [a, ...line, b] };
 }
 
 /**
@@ -63,19 +70,19 @@ export async function routeLeg(
 ): Promise<LegResult> {
   if (opts.nogos.length) {
     try {
-      return { coords: await brouter(a, b, opts.nogos, signal) };
+      return await brouter(a, b, opts.nogos, signal);
     } catch {
       /* fall through: route without avoidance */
     }
     const r = await routeLeg(a, b, { profile: opts.profile, nogos: [] }, signal);
-    return { coords: r.coords, degraded: "no-avoid" };
+    return { ...r, degraded: "no-avoid" };
   }
   const [first, second] =
     opts.profile === "trails" ? [() => brouter(a, b, [], signal), () => osrm(a, b, signal)] : [() => osrm(a, b, signal), () => brouter(a, b, [], signal)];
   try {
-    return { coords: await first() };
+    return await first();
   } catch {
-    return { coords: await second(), degraded: "fallback" };
+    return { ...(await second()), degraded: "fallback" };
   }
 }
 

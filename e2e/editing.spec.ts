@@ -14,6 +14,11 @@ test("tracer au clic en suivant les chemins", async ({ page, fakes }) => {
   await expect(page.locator(".profile svg path").first()).toBeVisible();
   await expect.poll(async () => parseInt(await page.locator(".stat.up b").innerText())).toBeGreaterThan(0);
   expect((await draft(page)).waypoints).toHaveLength(3);
+  // What the route runs on, from the router's way tags
+  const legend = page.locator(".surface-legend");
+  await expect(legend).toContainText("Bitume");
+  await expect(legend).toContainText("Sentier");
+  await expect(legend).toContainText("Chemin");
   expect(fakes.errors).toEqual([]);
 });
 

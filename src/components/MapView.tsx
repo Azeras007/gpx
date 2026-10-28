@@ -74,6 +74,8 @@ interface Props {
   onReplayDrag: (p: LatLng) => LatLng;
   /** The user moved the map by hand (drag), e.g. to stop following the replay. */
   onUserPan: () => void;
+  /** Live GPS position: accuracy circle and a dot pointing where the user heads. */
+  me: { pos: LatLng; acc: number; heading: number | null; off: boolean } | null;
   /** A waymarked trail being previewed from the explorer. */
   preview: LatLng[] | null;
   /** Other trails found by the explorer, drawn thin and clickable. */
@@ -119,6 +121,7 @@ export default function MapView(props: Props) {
   const poiGroup = useRef<L.LayerGroup | null>(null);
   const hoverMarker = useRef<L.CircleMarker | null>(null);
   const replayMarker = useRef<L.Marker | null>(null);
+  const meMarker = useRef<{ dot: L.Marker; circle: L.Circle } | null>(null);
   const legLines = useRef<{ casing: L.Polyline; line: L.Polyline }[]>([]);
   // Callbacks change identity on every render; keep the latest in a ref so the
   // Leaflet handlers registered once always see fresh closures.
@@ -389,6 +392,30 @@ export default function MapView(props: Props) {
       replayMarker.current = mk.addTo(m);
     } else replayMarker.current.setLatLng(props.replayPos);
   }, [props.replayPos]);
+
+  // Live position
+  useEffect(() => {
+    const m = map.current!;
+    if (!props.me) {
+      meMarker.current?.dot.remove();
+      meMarker.current?.circle.remove();
+      meMarker.current = null;
+      return;
+    }
+    const { pos, acc, heading, off } = props.me;
+    const html = `<div class="me-dot ${off ? "off" : ""}">${heading != null ? `<i style="transform:rotate(${Math.round(heading)}deg)"></i>` : ""}</div>`;
+    if (!meMarker.current) {
+      meMarker.current = {
+        circle: L.circle(pos, { radius: acc, color: "#2f6fd1", weight: 1, opacity: 0.5, fillColor: "#2f6fd1", fillOpacity: 0.12, interactive: false }).addTo(m),
+        dot: L.marker(pos, { interactive: false, keyboard: false, zIndexOffset: 2500, icon: L.divIcon({ className: "", html, iconSize: [22, 22], iconAnchor: [11, 11] }) }).addTo(m),
+      };
+    } else {
+      meMarker.current.circle.setLatLng(pos).setRadius(acc);
+      meMarker.current.dot.setLatLng(pos);
+      const el = meMarker.current.dot.getElement();
+      if (el) el.innerHTML = html;
+    }
+  }, [props.me]);
 
   // Amenities found on OpenStreetMap
   useEffect(() => {

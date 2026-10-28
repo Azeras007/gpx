@@ -1,0 +1,18 @@
+{
+  "name": "GPX Studio — Carnet de parcours",
+  "short_name": "GPX Studio",
+  "description": "Tracez, analysez et exportez vos parcours de course et de randonnée vers votre montre.",
+  "lang": "fr",
+  "start_url": "./app.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f4f0e6",
+  "theme_color": "#f4f0e6",
+  "categories": ["sports", "travel", "navigation"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
