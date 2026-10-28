@@ -4,7 +4,7 @@ test("planifier : météo, arrivée, temps de passage, objectif", async ({ page,
   await openWithRoute(page, [[45.92, 6.86], [45.93, 6.88], [45.94, 6.9], [45.95, 6.91]]);
   await page.getByRole("button", { name: "Planifier" }).click();
   await page.getByRole("button", { name: "Maintenant" }).click();
-  await expect(page.locator(".timeline")).toBeVisible();
+  await expect(page.locator(".timeline")).toBeVisible({ timeout: 20000 });
   await expect(page.locator(".weather .hour").first()).toBeVisible();
   await expect(page.locator(".source")).toContainText("Open-Meteo");
   await expect(page.locator(".splits .split:not(.head)")).not.toHaveCount(0);

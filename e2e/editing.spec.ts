@@ -27,8 +27,8 @@ test("ligne droite, annuler, rétablir, raccourcis", async ({ page, fakes }) => 
   await page.mouse.click(800, 450);
   await page.mouse.click(1000, 450);
   await page.mouse.click(1000, 300);
+  await expect.poll(async () => (await draft(page)).waypoints.length).toBe(3);
   expect(fakes.routingCalls).toHaveLength(0);
-  expect((await draft(page)).waypoints).toHaveLength(3);
   await page.keyboard.press("Control+z");
   await expect.poll(async () => (await draft(page)).waypoints.length).toBe(2);
   await page.keyboard.press("Control+y");
@@ -53,6 +53,7 @@ test("aller-retour, inverser, effacer puis annuler", async ({ page }) => {
   await expect.poll(() => shownDistance(page)).toBeGreaterThan(d0 * 1.9);
   await expect(page.locator(".alert.warn")).toContainText("parcourus deux fois");
   await page.keyboard.press("Control+z");
+  await expect.poll(async () => (await draft(page)).waypoints.length).toBe(4);
   const before = (await draft(page)).waypoints;
   await page.getByRole("button", { name: "Inverser" }).click();
   await expect.poll(async () => (await draft(page)).waypoints[0].lat).toBeCloseTo(before.at(-1).lat, 8);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type L from "leaflet";
 import {
   ArrowLeftRight,
@@ -44,12 +44,8 @@ import {
 } from "lucide-react";
 import MapView, { BASE_LAYERS, OSM_KINDS } from "./components/MapView";
 import ElevationChart from "./components/ElevationChart";
-import Planner from "./components/Planner";
-import Explorer, { KIND_HINT, type Tour } from "./components/Explorer";
+import { KIND_HINT, type Tour } from "./lib/tours";
 import { useMedia, useViewportHeight } from "./lib/useMedia";
-import UpgradeModal from "./components/UpgradeModal";
-import AccountModal from "./components/AccountModal";
-import FeedbackModal from "./components/FeedbackModal";
 import { PoiIcon } from "./components/icons";
 import { useAccount } from "./lib/account";
 import { deleteRoute as deleteCloudRoute, listRoutes, RouteLimitError, saveRoute } from "./lib/cloud";
@@ -90,7 +86,6 @@ import {
 } from "./lib/geo";
 import { buildExport, downloadFile, EXPORT_FORMATS, parseGpx, slugify, type ExportFormat } from "./lib/gpx";
 import { fetchElevations, fetchOsmPois, routeLeg, searchPlaces, type Nogo, type OsmPoi, type Place } from "./lib/services";
-import { renderCard } from "./lib/shareImage";
 import { breadcrumb, reportError, setReportContext } from "./lib/report";
 import { addMix, emptyMix, shares, SURFACES, type SurfaceMix } from "./lib/surface";
 import { cacheTiles, tilesAlong, tileUrl, useInstallPrompt, useOnline } from "./lib/offline";
@@ -107,6 +102,31 @@ import {
   type Prefs,
   type SavedRoute,
 } from "./lib/store";
+
+// Loaded on first use: the map opens faster. A part that cannot be fetched
+// (offline, or a new version deployed meanwhile) shows a message instead of crashing.
+function onDemand<P extends object>(load: () => Promise<{ default: React.ComponentType<P> }>) {
+  return lazy(() =>
+    load().catch((e) => {
+      reportError(e, "chargement", "warn");
+      return {
+        default: () => (
+          <p className="muted loading-block">
+            Cette partie de l'application n'a pas pu être chargée.{" "}
+            <button className="link" onClick={() => location.reload()}>
+              Recharger
+            </button>
+          </p>
+        ),
+      };
+    }),
+  );
+}
+const Explorer = onDemand(() => import("./components/Explorer"));
+const Planner = onDemand(() => import("./components/Planner"));
+const UpgradeModal = onDemand(() => import("./components/UpgradeModal"));
+const AccountModal = onDemand(() => import("./components/AccountModal"));
+const FeedbackModal = onDemand(() => import("./components/FeedbackModal"));
 
 const ACCENTS: Record<Activity, string> = { run: "#b4472e", hike: "#2e5a45" };
 
@@ -196,7 +216,7 @@ export default function App() {
   const [surfaceCache, setSurfaceCache] = useState<Map<string, SurfaceMix>>(() => new Map());
   const [profile, setProfile] = useState<ProfilePoint[]>([]);
   const [eleLoading, setEleLoading] = useState(false);
-  const [hover, setHover] = useState<LatLng | null>(null);
+  const hoverFrame = useRef<((p: LatLng | null) => void) | null>(null);
   /** Distance along the route under the mouse on the map (drives the profile cursor). */
   const [routeHoverD, setRouteHoverD] = useState<number | null>(null);
   const [osmPois, setOsmPois] = useState<OsmPoi[]>([]);
@@ -516,41 +536,89 @@ export default function App() {
   }, [slopeColorsOn, profile, track, cum]);
 
   // ── Replay animation ───────────────────────────────────────────────────────
-  // `follow`: the map keeps the moving point centered. Moving the map by hand
-  // stops following (the point goes on), "Suivre" brings it back.
+  // The point moves on every frame straight on the map (replayFrame); the rest
+  // of the interface (banner, profile cursor) follows a few times a second,
+  // which keeps long routes smooth on phones. `follow`: the camera glides
+  // along when the point nears the edge of the visible area; moving the map
+  // by hand stops that, "Suivre" brings it back.
+  const replayD = useRef(0);
+  const replayFrame = useRef<((pos: LatLng, trail: LatLng[]) => void) | null>(null);
+  const followRef = useRef(true);
+  followRef.current = replay?.follow ?? true;
+  const trailTo = useCallback(
+    (d: number) => {
+      let lo = 0;
+      let hi = cum.length - 1;
+      while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (cum[mid] <= d) lo = mid;
+        else hi = mid;
+      }
+      const out = track.slice(0, lo + 1);
+      out.push(pointAt(track, cum, d));
+      return out;
+    },
+    [track, cum],
+  );
+  /** Pans so that `pos` comes back to the middle of what is not covered by panels. */
+  const keepInView = useCallback(
+    (pos: LatLng, force = false) => {
+      const m = mapRef.current;
+      if (!m) return;
+      const size = m.getSize();
+      const mobile = size.x < 860;
+      const box = { l: mobile ? 0 : 404, t: mobile ? 150 : 60, r: size.x, b: size.y - (mobile ? sheetHeights.peek : 240) };
+      const p = m.latLngToContainerPoint(pos);
+      const mx = (box.r - box.l) * 0.22;
+      const my = (box.b - box.t) * 0.22;
+      const inside = p.x > box.l + mx && p.x < box.r - mx && p.y > box.t + my && p.y < box.b - my;
+      if (inside && !force) return;
+      m.panBy([p.x - (box.l + box.r) / 2, p.y - (box.t + box.b) / 2], { animate: true, duration: 0.6, easeLinearity: 0.4 });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sheetHeights.peek],
+  );
   useEffect(() => {
     if (!replay?.playing) return;
     const total = distance;
     // Whole route in ~25 s at 1×, whatever its length
     const speed = (total / 25) * replaySpeed;
     let last = performance.now();
+    let lastCommit = 0;
+    let lastPan = 0;
     let raf = 0;
     const tick = (now: number) => {
       const dt = Math.min(0.25, (now - last) / 1000);
       last = now;
-      setReplay((r) => {
-        if (!r?.playing) return r;
-        const d = Math.min(total, r.d + dt * speed);
-        return { ...r, d, playing: d < total };
-      });
-      raf = requestAnimationFrame(tick);
+      const d = Math.min(total, replayD.current + dt * speed);
+      replayD.current = d;
+      const done = d >= total;
+      const pos = pointAt(track, cum, d);
+      replayFrame.current?.(pos, trailTo(d));
+      if (followRef.current && now - lastPan > 650) {
+        lastPan = now;
+        keepInView(pos);
+      }
+      if (done || now - lastCommit > 120) {
+        lastCommit = now;
+        setReplay((r) => (r ? { ...r, d, playing: r.playing && !done } : r));
+      }
+      if (!done) raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [replay?.playing, replaySpeed, distance]);
+  }, [replay?.playing, replaySpeed, distance, track, cum, trailTo, keepInView]);
 
   // A route edited during the replay may be shorter than where it was
   useEffect(() => {
-    if (replay && replay.d > distance) setReplay({ ...replay, d: distance, playing: false });
+    if (replay && replay.d > distance) {
+      replayD.current = distance;
+      setReplay({ ...replay, d: distance, playing: false });
+    }
     if (replay && track.length < 2) setReplay(null);
   }, [replay, distance, track.length]);
 
   const replayPos = replay && track.length > 1 ? pointAt(track, cum, replay.d) : null;
-  useEffect(() => {
-    if (!replay?.playing || !replay.follow || !replayPos) return;
-    mapRef.current?.panTo(replayPos, { animate: false });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [replay?.d, replay?.playing, replay?.follow]);
 
   const startReplay = () => {
     if (track.length < 2) return;
@@ -559,24 +627,24 @@ export default function App() {
     const from = replay && replay.d < distance - 1 ? replay.d : 0;
     const m = mapRef.current;
     if (m && m.getZoom() < 14) m.setView(pointAt(track, cum, from), 15, { animate: false });
+    replayD.current = from;
+    hoverFrame.current?.(null);
     setReplay({ d: from, playing: true, follow: true });
+    keepInView(pointAt(track, cum, from), true);
   };
   const pauseReplay = () => setReplay((r) => (r ? { ...r, playing: false } : r));
   const stopReplay = () => setReplay(null);
   /** Moves the replay to `d` meters, keeping it playing or paused. */
-  const seekReplay = (d: number) =>
-    setReplay((r) => (r ? { ...r, d: Math.max(0, Math.min(distance, d)), playing: r.playing && d < distance } : r));
+  const seekReplay = (d: number) => {
+    const to = Math.max(0, Math.min(distance, d));
+    replayD.current = to;
+    setReplay((r) => (r ? { ...r, d: to, playing: r.playing && to < distance } : r));
+  };
   const followReplay = () => {
     setReplay((r) => (r ? { ...r, follow: true } : r));
-    if (replayPos) mapRef.current?.panTo(replayPos);
+    if (replayPos) keepInView(replayPos, true);
   };
-  const replayTrail = useMemo(() => {
-    if (!replay) return null;
-    const out: LatLng[] = [];
-    for (let i = 0; i < track.length && cum[i] < replay.d; i++) out.push(track[i]);
-    out.push(pointAt(track, cum, replay.d));
-    return out;
-  }, [replay, track, cum]);
+  const replayTrail = useMemo(() => (replay ? trailTo(replay.d) : null), [replay, trailTo]);
   const replayEle = replay ? eleAt(liveProfile, replay.d) : null;
 
   // ── Live position while out on the route ───────────────────────────────────
@@ -984,6 +1052,7 @@ export default function App() {
   const shareImage = async () => {
     if (track.length < 2) return toast("Tracez un parcours d'abord.", "error");
     try {
+      const { renderCard } = await import("./lib/shareImage");
       const blob = await renderCard({
         name,
         activity,
@@ -1152,8 +1221,10 @@ export default function App() {
     );
   };
 
+  const [exploreSeen, setExploreSeen] = useState(false);
   const switchTab = (t: Tab) => {
     setTab(t);
+    if (t === "explore") setExploreSeen(true);
     if (t !== "explore") setPreview(null);
   };
 
@@ -1234,7 +1305,7 @@ export default function App() {
               if (p) seekReplay(p.d);
               return;
             }
-            setHover(p ? [p.lat, p.lng] : null);
+            hoverFrame.current?.(p ? [p.lat, p.lng] : null);
           }}
           onPick={(p) => {
             if (replay) seekReplay(p.d);
@@ -1262,6 +1333,7 @@ export default function App() {
         osmPois={osmPois}
         replayTrail={replayTrail}
         replayPos={replayPos}
+        replayFrame={replayFrame}
         onReplayGrab={pauseReplay}
         onReplayDrag={(p) => {
           const at = locateOnTrack(track, cum, p);
@@ -1281,7 +1353,7 @@ export default function App() {
           if (isMobile) setSheet("peek");
         }}
         bottomInset={isMobile ? sheetHeights.peek + 170 : 0}
-        hover={replay ? null : hover}
+        hoverFrame={hoverFrame}
         kmMarks={kmMarks}
         overlaps={overlaps.lines}
         pois={pois}
@@ -1692,20 +1764,24 @@ export default function App() {
           </>
         )}
 
-        {/* Kept mounted: results survive a look at another tab */}
+        {/* Mounted on first visit, then kept: results survive a look at another tab */}
         <div hidden={tab !== "explore"}>
-          <Explorer
-            map={mapRef.current}
-            activity={activity}
-            runPace={prefs.runPace}
-            hikeSpeed={prefs.hikeSpeed}
-            selectedId={preview?.trail.id ?? null}
-            onSelect={(t) => {
-              setPreview(t);
-              if (isMobile) setSheet("peek");
-            }}
-            onToursChange={setTours}
-          />
+          {exploreSeen && (
+            <Suspense fallback={<Loading />}>
+              <Explorer
+                map={mapRef.current}
+                activity={activity}
+                runPace={prefs.runPace}
+                hikeSpeed={prefs.hikeSpeed}
+                selectedId={preview?.trail.id ?? null}
+                onSelect={(t) => {
+                  setPreview(t);
+                  if (isMobile) setSheet("peek");
+                }}
+                onToursChange={setTours}
+              />
+            </Suspense>
+          )}
         </div>
 
         {tab === "plan" && !plan.isPro && (
@@ -1726,31 +1802,33 @@ export default function App() {
         )}
 
         {tab === "plan" && plan.isPro && (
-          <Planner
-            activity={activity}
-            start={prefs.start}
-            onStartChange={(start) => updatePrefs({ start })}
-            duration={duration}
-            runPace={prefs.runPace}
-            hikeSpeed={prefs.hikeSpeed}
-            onApplyPace={(runPace) => {
-              updatePrefs({ runPace });
-              toast(`Allure réglée sur ${formatPace(runPace)} /km`, "success");
-            }}
-            onApplySpeed={(hikeSpeed) => {
-              updatePrefs({ hikeSpeed });
-              toast(`Vitesse réglée sur ${hikeSpeed.toFixed(1).replace(".", ",")} km/h`, "success");
-            }}
-            startPoint={waypoints[0] ?? null}
-            splits={splits}
-            pois={poisOnRoute}
-            onRenamePoi={(id, n) => setPois((l) => l.map((x) => (x.id === id ? { ...x, name: n } : x)))}
-            onRemovePoi={(id) => setPois((l) => l.filter((x) => x.id !== id))}
-            onFocusPoi={(p) => mapRef.current?.flyTo([p.lat, p.lng], Math.max(15, mapRef.current.getZoom()))}
-            weight={prefs.weight}
-            onWeightChange={(weight) => updatePrefs({ weight })}
-            kcal={kcal}
-          />
+          <Suspense fallback={<Loading />}>
+            <Planner
+              activity={activity}
+              start={prefs.start}
+              onStartChange={(start) => updatePrefs({ start })}
+              duration={duration}
+              runPace={prefs.runPace}
+              hikeSpeed={prefs.hikeSpeed}
+              onApplyPace={(runPace) => {
+                updatePrefs({ runPace });
+                toast(`Allure réglée sur ${formatPace(runPace)} /km`, "success");
+              }}
+              onApplySpeed={(hikeSpeed) => {
+                updatePrefs({ hikeSpeed });
+                toast(`Vitesse réglée sur ${hikeSpeed.toFixed(1).replace(".", ",")} km/h`, "success");
+              }}
+              startPoint={waypoints[0] ?? null}
+              splits={splits}
+              pois={poisOnRoute}
+              onRenamePoi={(id, n) => setPois((l) => l.map((x) => (x.id === id ? { ...x, name: n } : x)))}
+              onRemovePoi={(id) => setPois((l) => l.filter((x) => x.id !== id))}
+              onFocusPoi={(p) => mapRef.current?.flyTo([p.lat, p.lng], Math.max(15, mapRef.current.getZoom()))}
+              weight={prefs.weight}
+              onWeightChange={(weight) => updatePrefs({ weight })}
+              kcal={kcal}
+            />
+          </Suspense>
         )}
 
         {tab === "library" && (
@@ -2114,38 +2192,40 @@ export default function App() {
           }}
         />
       )}
-      {feedbackOpen && <FeedbackModal routeLink={waypoints.length > 1 ? routeLink() : null} onClose={() => setFeedbackOpen(false)} />}
+      <Suspense fallback={null}>
+        {feedbackOpen && <FeedbackModal routeLink={waypoints.length > 1 ? routeLink() : null} onClose={() => setFeedbackOpen(false)} />}
 
-      {accountOpen && (
-        <AccountModal
-          account={account}
-          plan={plan}
-          reason={accountOpen.reason}
-          onUpgrade={() => {
-            setAccountOpen(null);
-            setUpgrade({ feature: null });
-          }}
-          onClose={() => setAccountOpen(null)}
-        />
-      )}
+        {accountOpen && (
+          <AccountModal
+            account={account}
+            plan={plan}
+            reason={accountOpen.reason}
+            onUpgrade={() => {
+              setAccountOpen(null);
+              setUpgrade({ feature: null });
+            }}
+            onClose={() => setAccountOpen(null)}
+          />
+        )}
 
-      {upgrade && (
-        <UpgradeModal
-          feature={upgrade.feature}
-          trialUsed={plan.trialUsed}
-          onStartTrial={async () => {
-            const r = await plan.startTrial();
-            if (r.ok) toast("Essai Pro activé pour 14 jours — profitez-en !", "success");
-            return r;
-          }}
-          onCheckout={plan.checkout}
-          onNeedAccount={(reason) => {
-            setUpgrade(null);
-            setAccountOpen({ reason });
-          }}
-          onClose={() => setUpgrade(null)}
-        />
-      )}
+        {upgrade && (
+          <UpgradeModal
+            feature={upgrade.feature}
+            trialUsed={plan.trialUsed}
+            onStartTrial={async () => {
+              const r = await plan.startTrial();
+              if (r.ok) toast("Essai Pro activé pour 14 jours — profitez-en !", "success");
+              return r;
+            }}
+            onCheckout={plan.checkout}
+            onNeedAccount={(reason) => {
+              setUpgrade(null);
+              setAccountOpen({ reason });
+            }}
+            onClose={() => setUpgrade(null)}
+          />
+        )}
+      </Suspense>
 
       <div className="toasts">
         {toasts.map((t) => (
@@ -2155,6 +2235,14 @@ export default function App() {
         ))}
       </div>
     </div>
+  );
+}
+
+function Loading() {
+  return (
+    <p className="muted loading-block">
+      <span className="spinner" /> Chargement…
+    </p>
   );
 }
 

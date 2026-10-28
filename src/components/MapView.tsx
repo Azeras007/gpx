@@ -74,6 +74,10 @@ interface Props {
   onReplayDrag: (p: LatLng) => LatLng;
   /** The user moved the map by hand (drag), e.g. to stop following the replay. */
   onUserPan: () => void;
+  /** Filled by the map: moves the replay point and its trail without a React render. */
+  replayFrame: { current: ((pos: LatLng, trail: LatLng[]) => void) | null };
+  /** Filled by the map: shows the point under the cursor of the profile (null hides it). */
+  hoverFrame: { current: ((p: LatLng | null) => void) | null };
   /** Live GPS position: accuracy circle and a dot pointing where the user heads. */
   me: { pos: LatLng; acc: number; heading: number | null; off: boolean } | null;
   /** A waymarked trail being previewed from the explorer. */
@@ -83,7 +87,6 @@ interface Props {
   onTourClick: (id: number) => void;
   /** Extra space kept free at the bottom when fitting a route (mobile sheet). */
   bottomInset: number;
-  hover: LatLng | null;
   kmMarks: { pos: LatLng; km: number }[];
   overlaps: LatLng[][];
   pois: Poi[];
@@ -122,7 +125,9 @@ export default function MapView(props: Props) {
   const hoverMarker = useRef<L.CircleMarker | null>(null);
   const replayMarker = useRef<L.Marker | null>(null);
   const meMarker = useRef<{ dot: L.Marker; circle: L.Circle } | null>(null);
-  const legLines = useRef<{ casing: L.Polyline; line: L.Polyline }[]>([]);
+  const dragLine = useRef<L.Polyline | null>(null);
+  const legsRef = useRef(props.legs);
+  legsRef.current = props.legs;
   // Callbacks change identity on every render; keep the latest in a ref so the
   // Leaflet handlers registered once always see fresh closures.
   const cb = useRef(props);
@@ -195,33 +200,34 @@ export default function MapView(props: Props) {
     }
   }, [props.trails]);
 
-  // Route legs
+  // Route legs. Consecutive legs in the same state are drawn as one line:
+  // a 300-point imported route is 3 SVG paths instead of 900, which keeps
+  // panning, zooming and the replay smooth.
   useEffect(() => {
     const g = legGroup.current!;
     g.clearLayers();
-    legLines.current = props.legs.map((leg, i) => {
-      const pending = props.pendingLegs[i];
-      const casing = L.polyline(leg, {
-        color: "#ffffff",
-        weight: 9,
-        opacity: 0.95,
-        lineCap: "round",
-        lineJoin: "round",
-        interactive: false,
-      }).addTo(g);
-      const line = L.polyline(leg, {
+    const runs: { pending: boolean; from: number; line: LatLng[] }[] = [];
+    props.legs.forEach((leg, i) => {
+      const pending = !!props.pendingLegs[i];
+      const last = runs[runs.length - 1];
+      if (last && last.pending === pending) last.line.push(...leg.slice(1));
+      else runs.push({ pending, from: i, line: leg.slice() });
+    });
+    for (const run of runs) {
+      L.polyline(run.line, { color: "#ffffff", weight: 9, opacity: 0.95, lineCap: "round", lineJoin: "round", interactive: false }).addTo(g);
+      const line = L.polyline(run.line, {
         color: props.accent,
         weight: 5,
         opacity: 1,
         lineCap: "round",
         lineJoin: "round",
-        dashArray: pending ? "2 10" : undefined,
-        bubblingMouseEvents: false,
+        dashArray: run.pending ? "2 10" : undefined,
+        interactive: false,
         className: "route-line",
       }).addTo(g);
       // Wider invisible hit area for inserting points on the line
-      L.polyline(leg, { weight: 18, opacity: 0, bubblingMouseEvents: false })
-        .on("click", (e: L.LeafletMouseEvent) => cb.current.onInsert(i + 1, [e.latlng.lat, e.latlng.lng]))
+      L.polyline(run.line, { weight: 18, opacity: 0, bubblingMouseEvents: false })
+        .on("click", (e: L.LeafletMouseEvent) => cb.current.onInsert(legAt(e.latlng) + 1, [e.latlng.lat, e.latlng.lng]))
         .on("mouseover", () => line.setStyle({ weight: 7 }))
         .on("mousemove", (e: L.LeafletMouseEvent) => cb.current.onRouteHover([e.latlng.lat, e.latlng.lng]))
         .on("mouseout", () => {
@@ -229,61 +235,91 @@ export default function MapView(props: Props) {
           cb.current.onRouteHover(null);
         })
         .addTo(g);
-      return { casing, line };
-    });
+    }
+    /** Index of the leg closest to a clicked point. */
+    function legAt(p: L.LatLng) {
+      const m = map.current!;
+      const q = m.latLngToLayerPoint(p);
+      let best = { i: 0, d: Infinity };
+      legsRef.current.forEach((leg, i) => {
+        for (let k = 1; k < leg.length; k++) {
+          const d = L.LineUtil.pointToSegmentDistance(q, m.latLngToLayerPoint(leg[k - 1]), m.latLngToLayerPoint(leg[k]));
+          if (d < best.d) best = { i, d };
+        }
+      });
+      return best.i;
+    }
   }, [props.legs, props.pendingLegs, props.accent]);
 
-  // Waypoint markers
+  // Waypoint markers, kept from one render to the next: only the points that
+  // changed are touched, instead of rebuilding hundreds of markers per edit.
+  const markers = useRef(new Map<string, { mk: L.Marker; html: string; meta: { i: number } }>());
   useEffect(() => {
     const g = markerGroup.current!;
-    g.clearLayers();
     const wps = props.waypoints;
     const dense = wps.length > 40;
+    const seen = new Set<string>();
     wps.forEach((wp, i) => {
+      seen.add(wp.id);
       const isStart = i === 0;
       const isEnd = i === wps.length - 1 && wps.length > 1;
       const kind = isStart ? "start" : isEnd ? "end" : dense ? "mini" : "mid";
       const size = kind === "mini" ? 9 : kind === "mid" ? 18 : 26;
-      const icon = L.divIcon({
-        className: "",
-        html: `<div class="wp wp-${kind}" style="--accent:${props.accent}">${
-          isStart ? '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>' : isEnd ? '<svg viewBox="0 0 24 24"><path d="M5 21V4h9l1 2h5v9h-7l-1-2H7v8z"/></svg>' : ""
-        }</div>`,
-        iconSize: [size, size],
-        iconAnchor: [size / 2, size / 2],
+      const html = `<div class="wp wp-${kind}" style="--accent:${props.accent}">${
+        isStart ? '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>' : isEnd ? '<svg viewBox="0 0 24 24"><path d="M5 21V4h9l1 2h5v9h-7l-1-2H7v8z"/></svg>' : ""
+      }</div>`;
+      const label = isStart ? "Départ · clic pour boucler" : isEnd ? "Arrivée" : `Point ${i}`;
+      const tip = `${label}<br><span>Glisser pour déplacer · double-clic pour supprimer</span>`;
+      const known = markers.current.get(wp.id);
+      if (known) {
+        known.meta.i = i;
+        const ll = known.mk.getLatLng();
+        if (ll.lat !== wp.lat || ll.lng !== wp.lng) known.mk.setLatLng([wp.lat, wp.lng]);
+        if (known.html !== html) {
+          known.mk.setIcon(L.divIcon({ className: "", html, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }));
+          known.mk.setZIndexOffset(isStart || isEnd ? 1000 : 0);
+          known.mk.unbindTooltip().bindTooltip(tip, { direction: "top", offset: [0, -size / 2 - 4], className: "wp-tip" });
+          known.html = html;
+        } else known.mk.setTooltipContent(tip);
+        return;
+      }
+      const meta = { i };
+      const mk = L.marker([wp.lat, wp.lng], {
+        icon: L.divIcon({ className: "", html, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }),
+        draggable: true,
+        autoPan: true,
+        zIndexOffset: isStart || isEnd ? 1000 : 0,
       });
-      const mk = L.marker([wp.lat, wp.lng], { icon, draggable: true, autoPan: true, zIndexOffset: isStart || isEnd ? 1000 : 0 });
+      // While dragging, the two legs around the point are previewed as straight lines
       mk.on("drag", () => {
         const p = mk.getLatLng();
-        const cur: LatLng = [p.lat, p.lng];
-        const prev = legLines.current[i - 1];
-        const next = legLines.current[i];
-        if (prev) {
-          const a: LatLng = [wps[i - 1].lat, wps[i - 1].lng];
-          prev.casing.setLatLngs([a, cur]);
-          prev.line.setLatLngs([a, cur]);
-        }
-        if (next) {
-          const b: LatLng = [wps[i + 1].lat, wps[i + 1].lng];
-          next.casing.setLatLngs([cur, b]);
-          next.line.setLatLngs([cur, b]);
-        }
+        const all = cb.current.waypoints;
+        const j = meta.i;
+        const pts: LatLng[] = [];
+        if (all[j - 1]) pts.push([all[j - 1].lat, all[j - 1].lng]);
+        pts.push([p.lat, p.lng]);
+        if (all[j + 1]) pts.push([all[j + 1].lat, all[j + 1].lng]);
+        if (!dragLine.current) dragLine.current = L.polyline(pts, { color: cb.current.accent, weight: 4, dashArray: "6 8", interactive: false }).addTo(map.current!);
+        else dragLine.current.setLatLngs(pts);
       });
       mk.on("dragend", () => {
+        dragLine.current?.remove();
+        dragLine.current = null;
         const p = mk.getLatLng();
         cb.current.onMove(wp.id, [p.lat, p.lng]);
       });
       mk.on("contextmenu", () => cb.current.onRemove(wp.id));
       mk.on("dblclick", () => cb.current.onRemove(wp.id));
-      if (isStart) mk.on("click", () => cb.current.onStartClick());
-      const label = isStart ? "Départ · clic pour boucler" : isEnd ? "Arrivée" : `Point ${i}`;
-      mk.bindTooltip(`${label}<br><span>Glisser pour déplacer · double-clic pour supprimer</span>`, {
-        direction: "top",
-        offset: [0, -size / 2 - 4],
-        className: "wp-tip",
-      });
+      mk.on("click", () => meta.i === 0 && cb.current.onStartClick());
+      mk.bindTooltip(tip, { direction: "top", offset: [0, -size / 2 - 4], className: "wp-tip" });
       mk.addTo(g);
+      markers.current.set(wp.id, { mk, html, meta });
     });
+    for (const [id, m] of markers.current) {
+      if (seen.has(id)) continue;
+      m.mk.remove();
+      markers.current.delete(id);
+    }
   }, [props.waypoints, props.accent]);
 
   // Kilometer markers
@@ -366,6 +402,17 @@ export default function MapView(props: Props) {
     }
     replayLine.current.setLatLngs(props.replayTrail);
   }, [props.replayTrail]);
+
+  useEffect(() => {
+    props.replayFrame.current = (pos, trail) => {
+      replayMarker.current?.setLatLng(pos);
+      replayLine.current?.setLatLngs(trail);
+    };
+    return () => {
+      props.replayFrame.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Replay handle: follows the animation, and can be dragged along the route
   useEffect(() => {
@@ -483,28 +530,27 @@ export default function MapView(props: Props) {
     el.current!.classList.toggle("placing", props.placing);
   }, [props.placing]);
 
-  // Hover marker from the elevation profile
+  // Hover marker from the elevation profile, moved without a React render
+  const accentRef = useRef(props.accent);
+  accentRef.current = props.accent;
   useEffect(() => {
-    const m = map.current!;
-    if (!props.hover) {
-      hoverMarker.current?.remove();
-      hoverMarker.current = null;
-      return;
-    }
-    if (!hoverMarker.current) {
-      hoverMarker.current = L.circleMarker(props.hover, {
-        radius: 8,
-        color: "#fff",
-        weight: 3,
-        fillColor: props.accent,
-        fillOpacity: 1,
-        interactive: false,
-      }).addTo(m);
-    } else {
-      hoverMarker.current.setLatLng(props.hover);
-      hoverMarker.current.setStyle({ fillColor: props.accent });
-    }
-  }, [props.hover, props.accent]);
+    props.hoverFrame.current = (p) => {
+      const m = map.current;
+      if (!m) return;
+      if (!p) {
+        hoverMarker.current?.remove();
+        hoverMarker.current = null;
+        return;
+      }
+      if (!hoverMarker.current) {
+        hoverMarker.current = L.circleMarker(p, { radius: 8, color: "#fff", weight: 3, fillColor: accentRef.current, fillOpacity: 1, interactive: false }).addTo(m);
+      } else hoverMarker.current.setLatLng(p).setStyle({ fillColor: accentRef.current });
+    };
+    return () => {
+      props.hoverFrame.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return <div ref={el} className="map" />;
 }

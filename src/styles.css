@@ -3003,3 +3003,9 @@ kbd {
   margin-top: 8px;
   font-size: 13px;
 }
+.loading-block {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 4px;
+}

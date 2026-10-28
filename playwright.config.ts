@@ -8,6 +8,8 @@ export default defineConfig({
   timeout: 45_000,
   expect: { timeout: 8_000 },
   fullyParallel: true,
+  // Map rendering is CPU-heavy: too many browsers at once make touch gestures miss
+  workers: 2,
   retries: 0,
   reporter: [["list"]],
   use: {

@@ -8,7 +8,8 @@
 //   REPORT_ALLOWED_ORIGINS     optional, comma-separated origins allowed to post
 // Without the token and chat id the endpoint answers 503 and sends nothing.
 
-declare const process: { env: Record<string, string | undefined> };
+// Read through globalThis so the file compiles with or without Node's types
+const env = () => (globalThis as unknown as { process: { env: Record<string, string | undefined> } }).process.env;
 
 type Kind = "error" | "feedback";
 
@@ -127,10 +128,10 @@ const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
 export async function POST(request: Request): Promise<Response> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chat = process.env.TELEGRAM_CHAT_ID;
+  const token = env().TELEGRAM_BOT_TOKEN;
+  const chat = env().TELEGRAM_CHAT_ID;
 
-  const allowed = (process.env.REPORT_ALLOWED_ORIGINS ?? "")
+  const allowed = (env().REPORT_ALLOWED_ORIGINS ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -153,7 +154,7 @@ export async function POST(request: Request): Promise<Response> {
   if (p.kind === "error" && duplicate(`${cut(p.source, 40)}|${cut(p.message, 200)}`)) return json(200, { ok: true, deduplicated: true });
 
   if (!token || !chat) return json(503, { ok: false, error: "not-configured" });
-  const target = p.kind === "feedback" ? process.env.TELEGRAM_FEEDBACK_CHAT_ID || chat : chat;
+  const target = p.kind === "feedback" ? env().TELEGRAM_FEEDBACK_CHAT_ID || chat : chat;
 
   const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
@@ -165,6 +166,6 @@ export async function POST(request: Request): Promise<Response> {
 }
 
 export function GET(): Response {
-  const configured = !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_CHAT_ID;
+  const configured = !!env().TELEGRAM_BOT_TOKEN && !!env().TELEGRAM_CHAT_ID;
   return json(200, { ok: true, configured });
 }

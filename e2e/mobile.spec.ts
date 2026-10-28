@@ -13,6 +13,19 @@ async function swipe(page: Page, x: number, y0: number, y1: number) {
 
 const sheetHeight = async (page: Page) => (await page.locator(".sheet").boundingBox())!.height;
 
+/** Waits for the sheet to stop moving: a tap during its animation lands somewhere else. */
+async function settled(page: Page) {
+  let last = -1;
+  await expect
+    .poll(async () => {
+      const h = await sheetHeight(page);
+      const same = Math.abs(h - last) < 0.5;
+      last = h;
+      return same;
+    })
+    .toBe(true);
+}
+
 test("mobile : tracer au doigt et utiliser la barre rapide", async ({ page, fakes }) => {
   await openEmpty(page, { mode: "line" });
   const vp = page.viewportSize()!;
@@ -44,8 +57,10 @@ test("mobile : le panneau s'ouvre, se ferme et un tap carte le referme", async (
   const top = (await page.locator(".sheet-top").boundingBox())!;
   await swipe(page, top.x + top.width / 2, top.y + 20, 80);
   await expect.poll(() => sheetHeight(page)).toBeGreaterThan(page.viewportSize()!.height * 0.7);
-  await page.getByRole("button", { name: "Planifier" }).tap();
-  await expect(page.locator(".splits")).toBeVisible();
+  await settled(page);
+  await page.getByRole("button", { name: "Planifier" }).click();
+  // The planner is loaded on demand (compiled on first request by the dev server)
+  await expect(page.locator(".splits")).toBeVisible({ timeout: 20000 });
   const top2 = (await page.locator(".sheet-top").boundingBox())!;
   await swipe(page, top2.x + top2.width / 2, top2.y + 20, page.viewportSize()!.height - 20);
   await expect.poll(() => sheetHeight(page)).toBeLessThan(peek + 5);

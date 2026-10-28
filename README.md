@@ -29,6 +29,12 @@ Dashboard moderne pour **tracer, analyser et exporter des traces GPX** de course
 - 🔎 Recherche de lieux, géolocalisation, interface responsive (bottom sheet sur mobile)
 
 - 🧭 **Randonnées balisées** : GR, GR de Pays, PR et parcours de trail de la zone (OpenStreetMap), à prévisualiser et charger en un clic
+- 🛤️ **Revêtement** du parcours : bitume, chemin, sentier (d'après OpenStreetMap)
+- 📍 **Suivi en direct** sur le terrain : position GPS, distance et D+ restants, heure d'arrivée, prochain repère, alerte (et vibration) si l'on sort du parcours, écran maintenu allumé
+- 📴 **Application installable et hors ligne** : l'app et la carte déjà vue restent disponibles sans réseau, « Garder la carte du parcours hors ligne » télécharge la carte autour du tracé
+- 🎯 **Boucle depuis ma position**
+- ▶️ **Survol** pilotable : pause, curseur, point déplaçable le long du tracé, suivi de la caméra
+- 💬 **Retours des utilisateurs** (« Donner mon avis ») et **remontée automatique des erreurs** sur Telegram (voir [SETUP.md](SETUP.md#4-erreurs-et-retours-des-utilisateurs-sur-telegram))
 
 ## Offre gratuite / Pro
 
@@ -57,6 +63,17 @@ npm install
 npm run dev      # http://localhost:5173 (accueil) et /app.html (application)
 npm run build    # build de production dans dist/
 ```
+
+## Tests
+
+```bash
+npm test           # tests unitaires (calculs, GPX, liens de partage, stockage, Telegram…)
+npm run test:e2e   # parcours complets dans un navigateur, ordinateur et mobile
+```
+
+Les tests de bout en bout remplacent tous les services extérieurs (fonds de carte, calcul d'itinéraire,
+altitudes, météo, OpenStreetMap, Telegram) par des imitations locales : ils ne dépendent d'aucun serveur
+public. La première fois, installez le navigateur de test avec `npx playwright install chromium`.
 
 ## Services utilisés (gratuits, sans clé)
 

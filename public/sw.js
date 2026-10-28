@@ -6,7 +6,7 @@
 // - Map and terrain tiles: cache first, at most MAX_TILES kept.
 // - Everything else (routing, weather, reports…) is left to the network.
 
-const VERSION = "v1";
+const VERSION = "v2";
 const SHELL = `shell-${VERSION}`;
 const ASSETS = `assets-${VERSION}`;
 const TILES = "tiles-v1";
@@ -38,6 +38,12 @@ self.addEventListener("install", (event) => {
           const files = [...html.matchAll(/(?:src|href)="([^"]+\.(?:js|css|svg|png|woff2|webmanifest))"/g)].map((m) => new URL(m[1], self.registration.scope).href);
           const assets = await caches.open(ASSETS);
           await Promise.all(files.map((f) => assets.add(f).catch(() => {})));
+          // Parts of the app loaded on demand are only named inside the scripts
+          for (const js of files.filter((f) => f.endsWith(".js"))) {
+            const text = await (await assets.match(js))?.text();
+            const parts = [...new Set([...(text ?? "").matchAll(/["'`]\.\/([\w.-]+\.(?:js|css))["'`]/g)].map((m) => new URL(m[1], js).href))];
+            await Promise.all(parts.map((f) => assets.add(f).catch(() => {})));
+          }
           // Fonts are only named inside the stylesheets
           for (const css of files.filter((f) => f.endsWith(".css"))) {
             const text = await (await assets.match(css))?.text();
