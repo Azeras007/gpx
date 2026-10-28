@@ -1,4 +1,4 @@
-import { renderToStaticMarkup } from "react-dom/server";
+import { render } from "preact";
 import {
   Camera,
   Droplet,
@@ -41,5 +41,19 @@ export function PoiIcon({ type, size = 16 }: { type: PoiType; size?: number }) {
   return <Icon size={size} strokeWidth={1.9} />;
 }
 
-/** Static SVG markup of an icon, for Leaflet's HTML markers. */
-export const iconMarkup = (Icon: LucideIcon, size = 15) => renderToStaticMarkup(<Icon size={size} strokeWidth={2} />);
+const markup = new Map<string, string>();
+
+/** Static SVG markup of an icon, for Leaflet's HTML markers (rendered once, then reused). */
+export function iconMarkup(Icon: LucideIcon, size = 15) {
+  const key = `${Icon.displayName ?? ""}:${size}`;
+  let html = markup.get(key);
+  if (html == null) {
+    const el = document.createElement("div");
+    // Preact renders synchronously into a detached element
+    render((<Icon size={size} strokeWidth={2} />) as unknown as Parameters<typeof render>[0], el);
+    html = el.innerHTML;
+    render(null, el);
+    if (Icon.displayName) markup.set(key, html);
+  }
+  return html;
+}

@@ -24,6 +24,8 @@ import {
   type CommunityTrace,
   type Trail,
 } from "../lib/services";
+import { reportError } from "../lib/report";
+import { KIND_HINT, type Tour, type TourStats } from "../lib/tours";
 
 type Source = "community" | "waymarked";
 type Filter = "all" | "run" | "hike" | "short" | "mid" | "long" | "loop";
@@ -38,15 +40,6 @@ const FILTERS: { id: Filter; label: string; community?: boolean }[] = [
   { id: "loop", label: "Boucles" },
 ];
 
-export const KIND_HINT: Record<Trail["kind"], string> = {
-  GR: "Grande Randonnée",
-  GRP: "GR de Pays",
-  PR: "Petite Randonnée",
-  Trail: "Parcours de trail",
-  Rando: "Sentier balisé",
-  Course: "Course partagée",
-  Marche: "Randonnée partagée",
-};
 
 const MONTH = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric" });
 const DAY = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long", year: "numeric" });
@@ -97,19 +90,6 @@ function distanceTo(c: LatLng, line: LatLng[]) {
   let best = Infinity;
   for (let i = 0; i < line.length; i += step) best = Math.min(best, haversine(c, line[i]));
   return best;
-}
-
-export interface TourStats {
-  distance: number;
-  gain: number;
-  duration: number;
-  level: ReturnType<typeof difficulty>;
-}
-
-export interface Tour {
-  trail: Trail;
-  line: LatLng[];
-  stats: TourStats | null;
 }
 
 interface Props {
@@ -201,7 +181,10 @@ export default function Explorer(p: Props) {
       );
       if (!signal.aborted) setLines(new Map(linesRef.current));
     } catch (e) {
-      if ((e as Error).name !== "AbortError") setError((e as Error).message);
+      if ((e as Error).name !== "AbortError") {
+        reportError(e, "tracés", "warn");
+        setError((e as Error).message);
+      }
     } finally {
       if (!signal.aborted) setLoadingLines(false);
     }
@@ -274,7 +257,10 @@ export default function Explorer(p: Props) {
       done();
       loadLines(found.slice(0, BATCH), area, ctrl.signal);
     } catch (e) {
-      if ((e as Error).name !== "AbortError") setError((e as Error).message || "Recherche impossible pour le moment.");
+      if ((e as Error).name !== "AbortError") {
+        reportError(e, from === "community" ? "communauté" : "sentiers", "warn");
+        setError((e as Error).message || "Recherche impossible pour le moment.");
+      }
       done();
     }
   };
@@ -350,6 +336,7 @@ export default function Explorer(p: Props) {
         setLines(new Map(linesRef.current).set(t.id, line));
         tour = { trail: t, line, stats: computeFor(t.id, line) };
       } catch (e) {
+        reportError(e, "tracés", "warn");
         setError((e as Error).message || "Tracé indisponible.");
       } finally {
         setBusyId(null);

@@ -71,6 +71,37 @@ VITE_AUTH_GOOGLE=true
 
 Passez ensuite Stripe en **mode live** (nouvelles clés, nouveaux prix, nouveau webhook) au moment du lancement.
 
+## 4. Erreurs et retours des utilisateurs sur Telegram
+
+Chaque erreur de l'application (plantage, service injoignable, import raté…) et chaque message envoyé avec
+le bouton **« Donner mon avis »** arrivent sur Telegram. Le jeton du bot reste sur le serveur
+(fonction Vercel `api/report.ts`), il n'est jamais envoyé au navigateur.
+
+1. Dans Telegram, ouvrez **@BotFather** → `/newbot` → choisissez un nom. Il vous donne un **jeton**
+   (`123456:ABC-…`).
+2. Envoyez un message quelconque à votre nouveau bot (sinon il n'a pas le droit de vous écrire).
+3. Récupérez votre **identifiant de discussion** : ouvrez
+   `https://api.telegram.org/bot<JETON>/getUpdates` dans le navigateur et notez `"chat":{"id":…}`.
+   Pour un groupe, ajoutez-y le bot, écrivez dans le groupe, l'identifiant commence par `-100…`.
+4. Sur Vercel → *Settings → Environment Variables* (Production et Preview) :
+
+   | Variable | Valeur |
+   |---|---|
+   | `TELEGRAM_BOT_TOKEN` | le jeton du bot |
+   | `TELEGRAM_CHAT_ID` | l'identifiant de discussion |
+   | `TELEGRAM_FEEDBACK_CHAT_ID` | *facultatif* : une autre discussion pour les avis des utilisateurs |
+   | `REPORT_ALLOWED_ORIGINS` | *facultatif* : `https://votre-site.fr,https://votre-projet.vercel.app` pour refuser les envois venant d'ailleurs |
+
+5. Redéployez, puis vérifiez : `https://votre-site.fr/api/report` doit afficher `"configured":true`.
+
+Garde-fous intégrés : la même erreur n'est envoyée qu'une fois par visite et une fois toutes les 10 minutes
+côté serveur, 15 rapports au plus par visite, 5 avis par personne toutes les 10 minutes. Les adresses IP sont
+tronquées. Chaque rapport contient le message, la pile d'appels, les dernières actions de l'utilisateur
+(clics, messages affichés), l'appareil et la version déployée.
+
+En local (`npm run dev`), il n'y a pas de fonction serveur : les envois échouent sans bruit. Pour tester
+l'envoi réel, utilisez `vercel dev`.
+
 ## À savoir
 
 - Les fonctions Pro qui tournent entièrement dans le navigateur (boucle, météo…) ne peuvent pas être protégées
