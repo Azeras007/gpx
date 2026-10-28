@@ -66,6 +66,14 @@ interface Props {
   osmPois: OsmPoi[];
   /** Part of the route already covered by the replay animation. */
   replayTrail: LatLng[] | null;
+  /** Position of the replay, drawn as a handle that can be dragged along the route. */
+  replayPos: LatLng | null;
+  /** The replay handle is grabbed: the animation pauses. */
+  onReplayGrab: () => void;
+  /** The handle is dragged to `p`: returns the closest point of the route, where it is drawn. */
+  onReplayDrag: (p: LatLng) => LatLng;
+  /** The user moved the map by hand (drag), e.g. to stop following the replay. */
+  onUserPan: () => void;
   /** A waymarked trail being previewed from the explorer. */
   preview: LatLng[] | null;
   /** Other trails found by the explorer, drawn thin and clickable. */
@@ -110,6 +118,7 @@ export default function MapView(props: Props) {
   const hillLayer = useRef<L.TileLayer | null>(null);
   const poiGroup = useRef<L.LayerGroup | null>(null);
   const hoverMarker = useRef<L.CircleMarker | null>(null);
+  const replayMarker = useRef<L.Marker | null>(null);
   const legLines = useRef<{ casing: L.Polyline; line: L.Polyline }[]>([]);
   // Callbacks change identity on every render; keep the latest in a ref so the
   // Leaflet handlers registered once always see fresh closures.
@@ -139,6 +148,7 @@ export default function MapView(props: Props) {
     markerGroup.current = L.layerGroup().addTo(m);
     poiGroup.current = L.layerGroup().addTo(m);
     m.on("click", (e: L.LeafletMouseEvent) => cb.current.onAdd([e.latlng.lat, e.latlng.lng]));
+    m.on("dragstart", () => cb.current.onUserPan());
     m.on("moveend", () => {
       const c = m.getCenter();
       cb.current.onViewChange({ lat: c.lat, lng: c.lng, zoom: m.getZoom() });
@@ -353,6 +363,32 @@ export default function MapView(props: Props) {
     }
     replayLine.current.setLatLngs(props.replayTrail);
   }, [props.replayTrail]);
+
+  // Replay handle: follows the animation, and can be dragged along the route
+  useEffect(() => {
+    const m = map.current!;
+    if (!props.replayPos) {
+      replayMarker.current?.remove();
+      replayMarker.current = null;
+      return;
+    }
+    if (!replayMarker.current) {
+      const mk = L.marker(props.replayPos, {
+        draggable: true,
+        autoPan: false,
+        zIndexOffset: 3000,
+        keyboard: false,
+        icon: L.divIcon({ className: "", html: '<div class="replay-dot"></div>', iconSize: [26, 26], iconAnchor: [13, 13] }),
+      });
+      mk.on("dragstart", () => cb.current.onReplayGrab());
+      mk.on("drag", () => {
+        const p = mk.getLatLng();
+        mk.setLatLng(cb.current.onReplayDrag([p.lat, p.lng]));
+      });
+      mk.bindTooltip("Glisser pour avancer ou reculer", { direction: "top", offset: [0, -14], className: "wp-tip" });
+      replayMarker.current = mk.addTo(m);
+    } else replayMarker.current.setLatLng(props.replayPos);
+  }, [props.replayPos]);
 
   // Amenities found on OpenStreetMap
   useEffect(() => {

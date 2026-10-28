@@ -555,14 +555,17 @@ export function formatDistance(m: number): string {
 
 export function formatDuration(s: number): string {
   if (!isFinite(s) || s <= 0) return "0 min";
-  const h = Math.floor(s / 3600);
-  const m = Math.round((s % 3600) / 60);
+  // Rounded to the minute first, so 1 h 59 min 59 s reads "2 h 00", never "1 h 60"
+  const total = Math.round(s / 60);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
   if (h === 0) return `${m} min`;
   return `${h} h ${String(m).padStart(2, "0")}`;
 }
 
 export function formatPace(minPerKm: number): string {
-  const m = Math.floor(minPerKm);
-  const s = Math.round((minPerKm - m) * 60);
+  const total = Math.round(minPerKm * 60);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
 }

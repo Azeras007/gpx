@@ -1,4 +1,4 @@
-import { decodePolyline, encodePolyline, uid, type Activity, type Poi, type PoiType, type Waypoint } from "./geo";
+import { decodePolyline, encodePolyline, POI_TYPES, uid, type Activity, type Poi, type PoiType, type Waypoint } from "./geo";
 
 export interface SharedRoute {
   name: string;
@@ -30,7 +30,10 @@ export function encodeRoute(r: SharedRoute): string {
 export function decodeRoute(code: string): SharedRoute | null {
   try {
     const j = JSON.parse(fromB64(code));
+    if (typeof j?.w !== "string") return null;
     const pts = decodePolyline(j.w);
+    // A cut or tampered link decodes to nothing usable
+    if (!pts.length || pts.some(([lat, lng]) => !isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180)) return null;
     return {
       name: String(j.n || "Parcours partagé"),
       activity: j.a === "hike" ? "hike" : "run",
@@ -41,7 +44,9 @@ export function decodeRoute(code: string): SharedRoute | null {
         mode: j.m?.[i] === "l" ? "line" : "snap",
         avoid: j.m?.[i] === "a",
       })),
-      pois: (j.p ?? []).map(([lat, lng, type, name]: [number, number, PoiType, string]) => ({ id: uid(), lat, lng, type, name })),
+      pois: (Array.isArray(j.p) ? j.p : [])
+        .filter((p: unknown) => Array.isArray(p) && isFinite(p[0]) && isFinite(p[1]) && typeof p[2] === "string" && p[2] in POI_TYPES)
+        .map(([lat, lng, type, name]: [number, number, PoiType, string]) => ({ id: uid(), lat, lng, type, name: String(name ?? "") })),
     };
   } catch {
     return null;

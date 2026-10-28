@@ -24,6 +24,7 @@ import {
   type CommunityTrace,
   type Trail,
 } from "../lib/services";
+import { reportError } from "../lib/report";
 
 type Source = "community" | "waymarked";
 type Filter = "all" | "run" | "hike" | "short" | "mid" | "long" | "loop";
@@ -201,7 +202,10 @@ export default function Explorer(p: Props) {
       );
       if (!signal.aborted) setLines(new Map(linesRef.current));
     } catch (e) {
-      if ((e as Error).name !== "AbortError") setError((e as Error).message);
+      if ((e as Error).name !== "AbortError") {
+        reportError(e, "tracés", "warn");
+        setError((e as Error).message);
+      }
     } finally {
       if (!signal.aborted) setLoadingLines(false);
     }
@@ -274,7 +278,10 @@ export default function Explorer(p: Props) {
       done();
       loadLines(found.slice(0, BATCH), area, ctrl.signal);
     } catch (e) {
-      if ((e as Error).name !== "AbortError") setError((e as Error).message || "Recherche impossible pour le moment.");
+      if ((e as Error).name !== "AbortError") {
+        reportError(e, from === "community" ? "communauté" : "sentiers", "warn");
+        setError((e as Error).message || "Recherche impossible pour le moment.");
+      }
       done();
     }
   };
@@ -350,6 +357,7 @@ export default function Explorer(p: Props) {
         setLines(new Map(linesRef.current).set(t.id, line));
         tour = { trail: t, line, stats: computeFor(t.id, line) };
       } catch (e) {
+        reportError(e, "tracés", "warn");
         setError((e as Error).message || "Tracé indisponible.");
       } finally {
         setBusyId(null);

@@ -17,6 +17,7 @@ import {
   Link2,
   LocateFixed,
   Maximize2,
+  MessageSquarePlus,
   Mountain,
   PenLine,
   Play,
@@ -45,6 +46,7 @@ import Explorer, { KIND_HINT, type Tour } from "./components/Explorer";
 import { useMedia, useViewportHeight } from "./lib/useMedia";
 import UpgradeModal from "./components/UpgradeModal";
 import AccountModal from "./components/AccountModal";
+import FeedbackModal from "./components/FeedbackModal";
 import { PoiIcon } from "./components/icons";
 import { useAccount } from "./lib/account";
 import { deleteRoute as deleteCloudRoute, listRoutes, RouteLimitError, saveRoute } from "./lib/cloud";
@@ -56,6 +58,7 @@ import {
   cumulative,
   destination,
   difficulty,
+  eleAt,
   estimateDuration,
   findOverlaps,
   formatDistance,
@@ -85,6 +88,7 @@ import {
 import { buildExport, downloadFile, EXPORT_FORMATS, parseGpx, slugify, type ExportFormat } from "./lib/gpx";
 import { fetchElevations, fetchOsmPois, routeLeg, searchPlaces, type Nogo, type OsmPoi, type Place } from "./lib/services";
 import { renderCard } from "./lib/shareImage";
+import { breadcrumb, reportError, setReportContext } from "./lib/report";
 import { decodeRoute, encodeRoute } from "./lib/share";
 import {
   loadDraft,
@@ -167,6 +171,7 @@ export default function App() {
   const [placing, setPlacing] = useState<PoiType | null>(null);
   const toast = useCallback((text: string, tone: Toast["tone"] = "info") => {
     const id = uid();
+    breadcrumb(`message ${tone === "error" ? "d'erreur " : ""}« ${text} »`);
     setToasts((t) => [...t.filter((x) => x.text !== text), { id, text, tone }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3600);
   }, []);
@@ -186,7 +191,7 @@ export default function App() {
   const [routeHoverD, setRouteHoverD] = useState<number | null>(null);
   const [osmPois, setOsmPois] = useState<OsmPoi[]>([]);
   const [osmLoading, setOsmLoading] = useState(false);
-  const [replay, setReplay] = useState<{ d: number; playing: boolean } | null>(null);
+  const [replay, setReplay] = useState<{ d: number; playing: boolean; follow: boolean } | null>(null);
   const [replaySpeed, setReplaySpeed] = useState(1);
   const [dragOver, setDragOver] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -206,7 +211,10 @@ export default function App() {
     let alive = true;
     listRoutes()
       .then((r) => alive && setCloudLibrary(r))
-      .catch(() => alive && toast("Impossible de charger vos parcours en ligne.", "error"));
+      .catch((e) => {
+        reportError(e, "compte", "warn");
+        if (alive) toast("Impossible de charger vos parcours en ligne.", "error");
+      });
     return () => {
       alive = false;
     };
@@ -263,10 +271,12 @@ export default function App() {
   };
   const [layersOpen, setLayersOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("trace");
   const [loopKm, setLoopKm] = useState(10);
   const [loop, setLoop] = useState<LoopRequest | null>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const viewTimer = useRef<number | undefined>(undefined);
   const fileInput = useRef<HTMLInputElement>(null);
   const accent = ACCENTS[activity];
 
@@ -345,7 +355,8 @@ export default function App() {
           setLegCache((c) => new Map(c).set(k, r.coords));
           if (r.degraded === "no-avoid") toast("Impossible d'éviter les passages déjà faits sur un segment.", "error");
         })
-        .catch(() => {
+        .catch((e) => {
+          reportError(e, "routage", "warn", { profil: prefs.profile, evitement: nogos.length > 0 });
           setLegCache((c) => new Map(c).set(k, "error"));
           toast("Aucun chemin trouvé pour ce segment — tracé en ligne droite.", "error");
         })
@@ -379,7 +390,9 @@ export default function App() {
       fetchElevations(baseProfile, ctrl.signal)
         .then(setProfile)
         .catch((e) => {
-          if (e.name !== "AbortError") toast("Altitudes indisponibles pour le moment.", "error");
+          if (e.name === "AbortError") return;
+          reportError(e, "altitude", "warn");
+          toast("Altitudes indisponibles pour le moment.", "error");
         })
         .finally(() => !ctrl.signal.aborted && setEleLoading(false));
     }, 450);
@@ -422,6 +435,18 @@ export default function App() {
     return marks;
   }, [track, cum, distance]);
 
+  setReportContext(() => ({
+    points: waypoints.length,
+    distance_km: Math.round(distance / 100) / 10,
+    activite: activity,
+    onglet: tab,
+    mobile: isMobile,
+    fond: baseLayer,
+    survol: replay ? (replay.playing ? "en cours" : "en pause") : "non",
+    calcul: routing,
+    en_ligne: navigator.onLine,
+  }));
+
   const poisOnRoute = useMemo(
     () =>
       pois.map((p) => {
@@ -453,8 +478,8 @@ export default function App() {
   }, [slopeColorsOn, profile, track, cum]);
 
   // ── Replay animation ───────────────────────────────────────────────────────
-  const replayRef = useRef(replay);
-  replayRef.current = replay;
+  // `follow`: the map keeps the moving point centered. Moving the map by hand
+  // stops following (the point goes on), "Suivre" brings it back.
   useEffect(() => {
     if (!replay?.playing) return;
     const total = distance;
@@ -463,28 +488,49 @@ export default function App() {
     let last = performance.now();
     let raf = 0;
     const tick = (now: number) => {
-      const cur = replayRef.current;
-      if (!cur?.playing) return;
-      const d = Math.min(total, cur.d + ((now - last) / 1000) * speed);
+      const dt = Math.min(0.25, (now - last) / 1000);
       last = now;
-      setReplay({ d, playing: d < total });
-      const m = mapRef.current;
-      if (m) m.panTo(pointAt(track, cum, d), { animate: false });
-      if (d < total) raf = requestAnimationFrame(tick);
+      setReplay((r) => {
+        if (!r?.playing) return r;
+        const d = Math.min(total, r.d + dt * speed);
+        return { ...r, d, playing: d < total };
+      });
+      raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
+  }, [replay?.playing, replaySpeed, distance]);
+
+  // A route edited during the replay may be shorter than where it was
+  useEffect(() => {
+    if (replay && replay.d > distance) setReplay({ ...replay, d: distance, playing: false });
+    if (replay && track.length < 2) setReplay(null);
+  }, [replay, distance, track.length]);
+
+  const replayPos = replay && track.length > 1 ? pointAt(track, cum, replay.d) : null;
+  useEffect(() => {
+    if (!replay?.playing || !replay.follow || !replayPos) return;
+    mapRef.current?.panTo(replayPos, { animate: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [replay?.playing, replaySpeed, track]);
+  }, [replay?.d, replay?.playing, replay?.follow]);
 
   const startReplay = () => {
     if (track.length < 2) return;
     setSheet("peek");
+    const from = replay && replay.d < distance - 1 ? replay.d : 0;
     const m = mapRef.current;
-    if (m && m.getZoom() < 14) m.setView(track[0], 15, { animate: false });
-    setReplay({ d: replay && replay.d < distance ? replay.d : 0, playing: true });
+    if (m && m.getZoom() < 14) m.setView(pointAt(track, cum, from), 15, { animate: false });
+    setReplay({ d: from, playing: true, follow: true });
   };
-  const replayPos = replay ? pointAt(track, cum, replay.d) : null;
+  const pauseReplay = () => setReplay((r) => (r ? { ...r, playing: false } : r));
+  const stopReplay = () => setReplay(null);
+  /** Moves the replay to `d` meters, keeping it playing or paused. */
+  const seekReplay = (d: number) =>
+    setReplay((r) => (r ? { ...r, d: Math.max(0, Math.min(distance, d)), playing: r.playing && d < distance } : r));
+  const followReplay = () => {
+    setReplay((r) => (r ? { ...r, follow: true } : r));
+    if (replayPos) mapRef.current?.panTo(replayPos);
+  };
   const replayTrail = useMemo(() => {
     if (!replay) return null;
     const out: LatLng[] = [];
@@ -492,7 +538,7 @@ export default function App() {
     out.push(pointAt(track, cum, replay.d));
     return out;
   }, [replay, track, cum]);
-  const replayEle = replay ? liveProfile.find((p) => p.d >= replay.d)?.ele ?? null : null;
+  const replayEle = replay ? eleAt(liveProfile, replay.d) : null;
 
   // ── OpenStreetMap amenities around the route ───────────────────────────────
   const findOsmPois = async () => {
@@ -513,7 +559,8 @@ export default function App() {
           : "Aucun point utile trouvé près du parcours",
         near.length ? "success" : "info",
       );
-    } catch {
+    } catch (e) {
+      reportError(e, "overpass", "warn");
       toast("Recherche OpenStreetMap indisponible, réessayez plus tard.", "error");
     } finally {
       setOsmLoading(false);
@@ -685,6 +732,7 @@ export default function App() {
       toast(`Trace importée (${wps.length} points${parsed.pois.length ? `, ${parsed.pois.length} repères` : ""})`, "success");
       setTab("trace");
     } catch (e) {
+      reportError(e, "import", "warn", { fichier: file.name, taille: file.size });
       toast((e as Error).message, "error");
     }
   };
@@ -720,7 +768,10 @@ export default function App() {
         toast("Parcours enregistré dans votre compte", "success");
       } catch (e) {
         if (e instanceof RouteLimitError) setUpgrade({ feature: "library" });
-        else toast("Enregistrement impossible, réessayez.", "error");
+        else {
+          reportError(e, "compte", "warn");
+          toast("Enregistrement impossible, réessayez.", "error");
+        }
       }
       return;
     }
@@ -772,7 +823,8 @@ export default function App() {
       try {
         await deleteCloudRoute(id);
         setCloudLibrary((l) => (l ?? []).filter((r) => r.id !== id));
-      } catch {
+      } catch (e) {
+        reportError(e, "compte", "warn");
         return toast("Suppression impossible, réessayez.", "error");
       }
     } else {
@@ -811,7 +863,8 @@ export default function App() {
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         toast("Image téléchargée — parfaite pour Instagram ou WhatsApp", "success");
       }
-    } catch {
+    } catch (e) {
+      reportError(e, "image");
       toast("Impossible de créer l'image", "error");
     }
   };
@@ -850,9 +903,10 @@ export default function App() {
     };
   }, []);
 
+  const routeLink = () => `${location.origin}${location.pathname}#r=${encodeRoute({ name, activity, waypoints, pois })}`;
   const share = async () => {
     if (waypoints.length < 2) return toast("Tracez un parcours avant de le partager.", "error");
-    const url = `${location.origin}${location.pathname}#r=${encodeRoute({ name, activity, waypoints, pois })}`;
+    const url = routeLink();
     try {
       await navigator.clipboard.writeText(url);
       toast("Lien copié — envoyez-le à qui vous voulez", "success");
@@ -865,7 +919,9 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA") return;
+      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable) return;
+      // An open dialog only listens to Escape
+      if ((helpOpen || feedbackOpen || upgrade || accountOpen) && e.key !== "Escape") return;
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
       if (mod && key === "z") {
@@ -884,7 +940,10 @@ export default function App() {
       } else if (e.key === "Escape") {
         setPlacing(null);
         setHelpOpen(false);
-        setReplay(null);
+        setFeedbackOpen(false);
+        setUpgrade(null);
+        setAccountOpen(null);
+        stopReplay();
         setLayersOpen(false);
       } else if (mod) {
         return;
@@ -899,8 +958,10 @@ export default function App() {
       } else if (key === "f") {
         fitTo(waypoints);
       } else if (e.key === " " && track.length > 1) {
+        // A focused button already reacts to the space bar on its own
+        if (t.tagName === "BUTTON") return;
         e.preventDefault();
-        if (replay?.playing) setReplay({ ...replay, playing: false });
+        if (replay?.playing) pauseReplay();
         else startReplay();
       }
     };
@@ -921,6 +982,11 @@ export default function App() {
     if (t !== "explore") setPreview(null);
   };
 
+  const mapTours = useMemo(
+    () => (tab === "explore" ? tours.filter((t) => t.trail.id !== preview?.trail.id).map((t) => ({ id: t.trail.id, line: t.line })) : []),
+    [tab, tours, preview],
+  );
+
   const chartMarks = poisOnRoute
     .filter((p) => p.d != null)
     .map((p) => ({ d: p.d!, type: p.type, name: p.name }));
@@ -932,20 +998,20 @@ export default function App() {
             <h2>Profil altimétrique</h2>
             <div className="replay-ctrl">
               {replay?.playing ? (
-                <button className="icon-btn ghost" title="Pause" onClick={() => setReplay({ ...replay, playing: false })}>
+                <button className="icon-btn ghost" title="Pause" onClick={pauseReplay}>
                   <span className="pause-icon" />
                 </button>
               ) : (
                 <button className="replay-btn" onClick={startReplay} disabled={track.length < 2} title="Survoler le parcours">
-                  <Play size={13} /> {replay ? "Reprendre" : "Survol"}
+                  <Play size={13} /> {replay ? (replay.d >= distance - 1 ? "Rejouer" : "Reprendre") : "Survol"}
                 </button>
               )}
               {replay && (
                 <>
-                  <button className="speed" onClick={() => setReplaySpeed((v) => (v >= 4 ? 1 : v * 2))} title="Vitesse">
+                  <button className="speed" onClick={() => setReplaySpeed((v) => (v >= 8 ? 1 : v * 2))} title="Vitesse">
                     {replaySpeed}×
                   </button>
-                  <button className="icon-btn ghost" title="Arrêter" onClick={() => setReplay(null)}>
+                  <button className="icon-btn ghost" title="Arrêter le survol" onClick={stopReplay}>
                     <Square size={13} />
                   </button>
                 </>
@@ -968,8 +1034,18 @@ export default function App() {
           marks={chartMarks}
           overlaps={overlaps.ranges}
           cursorD={replay?.d ?? routeHoverD}
-          onHover={(p) => setHover(p ? [p.lat, p.lng] : null)}
-          onPick={(p) => mapRef.current?.panTo([p.lat, p.lng])}
+          onHover={(p) => {
+            // Paused replay: the profile moves the replay point itself
+            if (replay && !replay.playing) {
+              if (p) seekReplay(p.d);
+              return;
+            }
+            setHover(p ? [p.lat, p.lng] : null);
+          }}
+          onPick={(p) => {
+            if (replay) seekReplay(p.d);
+            mapRef.current?.panTo([p.lat, p.lng]);
+          }}
         />
           </>
   );
@@ -991,15 +1067,23 @@ export default function App() {
         slopeLines={slopeLines}
         osmPois={osmPois}
         replayTrail={replayTrail}
+        replayPos={replayPos}
+        onReplayGrab={pauseReplay}
+        onReplayDrag={(p) => {
+          const at = locateOnTrack(track, cum, p);
+          seekReplay(at.d);
+          return pointAt(track, cum, at.d);
+        }}
+        onUserPan={() => setReplay((r) => (r?.playing && r.follow ? { ...r, follow: false } : r))}
         preview={preview?.line ?? null}
-        tours={tab === "explore" ? tours.filter((t) => t.trail.id !== preview?.trail.id).map((t) => ({ id: t.trail.id, line: t.line })) : []}
+        tours={mapTours}
         onTourClick={(id) => {
           const t = tours.find((x) => x.trail.id === id);
           if (t) setPreview(t);
           if (isMobile) setSheet("peek");
         }}
         bottomInset={isMobile ? sheetHeights.peek + 170 : 0}
-        hover={replayPos ?? hover}
+        hover={replay ? null : hover}
         kmMarks={kmMarks}
         overlaps={overlaps.lines}
         pois={pois}
@@ -1021,7 +1105,11 @@ export default function App() {
           if (!p || track.length < 2) return setRouteHoverD(null);
           setRouteHoverD(locateOnTrack(track, cum, p).d);
         }}
-        onViewChange={(view) => updatePrefs({ view })}
+        onViewChange={(view) => {
+          // Saved once the map settles, not on every frame of a replay
+          clearTimeout(viewTimer.current);
+          viewTimer.current = window.setTimeout(() => updatePrefs({ view }), 600);
+        }}
       />
 
       {/* ── Sidebar ───────────────────────────────────────────────────────── */}
@@ -1102,6 +1190,9 @@ export default function App() {
                 Passer Pro
               </button>
             )}
+            <button className="icon-btn ghost" title="Donner mon avis" onClick={() => setFeedbackOpen(true)}>
+              <MessageSquarePlus size={18} />
+            </button>
             <button className="icon-btn ghost" title="Raccourcis & astuces (?)" onClick={() => setHelpOpen(true)}>
               <HelpCircle size={18} />
             </button>
@@ -1634,20 +1725,52 @@ export default function App() {
 
       {replay && (
         <div className="replay-hud panel">
-          <div>
-            <span className="label">Distance</span>
-            <b>{(replay.d / 1000).toFixed(2).replace(".", ",")} km</b>
+          <div className="replay-figures">
+            <div>
+              <span className="label">Distance</span>
+              <b>{(replay.d / 1000).toFixed(2).replace(".", ",")} km</b>
+            </div>
+            <div>
+              <span className="label">Altitude</span>
+              <b>{replayEle != null ? `${Math.round(replayEle)} m` : "—"}</b>
+            </div>
+            <div>
+              <span className="label">Temps</span>
+              <b>{formatDuration(distance ? (duration * replay.d) / distance : 0)}</b>
+            </div>
           </div>
-          <div>
-            <span className="label">Altitude</span>
-            <b>{replayEle != null ? `${Math.round(replayEle)} m` : "—"}</b>
-          </div>
-          <div>
-            <span className="label">Temps</span>
-            <b>{formatDuration(distance ? (duration * replay.d) / distance : 0)}</b>
-          </div>
-          <div className="replay-progress">
-            <span style={{ width: `${distance ? (replay.d / distance) * 100 : 0}%` }} />
+          <input
+            className="replay-seek"
+            type="range"
+            min={0}
+            max={Math.max(1, Math.round(distance))}
+            step={1}
+            value={Math.round(replay.d)}
+            onChange={(e) => seekReplay(+e.target.value)}
+            aria-label="Position du survol"
+            style={{ "--p": `${distance ? (replay.d / distance) * 100 : 0}%` } as React.CSSProperties}
+          />
+          <div className="replay-buttons">
+            {replay.playing ? (
+              <button className="icon-btn ghost" title="Pause" onClick={pauseReplay}>
+                <span className="pause-icon" />
+              </button>
+            ) : (
+              <button className="icon-btn ghost" title={replay.d >= distance - 1 ? "Rejouer" : "Reprendre"} onClick={startReplay}>
+                <Play size={15} />
+              </button>
+            )}
+            <button className="speed" onClick={() => setReplaySpeed((v) => (v >= 8 ? 1 : v * 2))} title="Vitesse">
+              {replaySpeed}×
+            </button>
+            {!replay.follow && (
+              <button className="speed" onClick={followReplay} title="Recentrer la carte sur le point">
+                <LocateFixed size={13} /> Suivre
+              </button>
+            )}
+            <button className="icon-btn ghost" title="Arrêter le survol" onClick={stopReplay}>
+              <X size={16} />
+            </button>
           </div>
         </div>
       )}
@@ -1662,7 +1785,16 @@ export default function App() {
         </div>
       )}
 
-      {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+      {helpOpen && (
+        <HelpModal
+          onClose={() => setHelpOpen(false)}
+          onFeedback={() => {
+            setHelpOpen(false);
+            setFeedbackOpen(true);
+          }}
+        />
+      )}
+      {feedbackOpen && <FeedbackModal routeLink={waypoints.length > 1 ? routeLink() : null} onClose={() => setFeedbackOpen(false)} />}
 
       {accountOpen && (
         <AccountModal
@@ -1745,7 +1877,7 @@ const SHORTCUTS: [string, string][] = [
   ["Échap", "Annuler le placement d'un repère"],
 ];
 
-function HelpModal({ onClose }: { onClose: () => void }) {
+function HelpModal({ onClose, onFeedback }: { onClose: () => void; onFeedback: () => void }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal panel" onClick={(e) => e.stopPropagation()}>
@@ -1766,6 +1898,13 @@ function HelpModal({ onClose }: { onClose: () => void }) {
         <p className="muted small">
           Le profil altimétrique est cliquable : il centre la carte sur le point survolé. Les sections parcourues deux fois sont
           surlignées sur la carte et sur le profil.
+        </p>
+        <p className="muted small">
+          Un bug, une idée ?{" "}
+          <button className="link" onClick={onFeedback}>
+            Donnez-nous votre avis
+          </button>
+          .
         </p>
       </div>
     </div>

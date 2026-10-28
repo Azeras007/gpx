@@ -20,6 +20,7 @@ import { formatDuration, formatPace, type Activity, type Poi, type Split } from 
 import { getWeather, type Weather } from "../lib/weather";
 import { PoiIcon } from "./icons";
 import { sunTimes } from "../lib/sun";
+import { reportError } from "../lib/report";
 
 const pad = (n: number) => String(n).padStart(2, "0");
 /** "YYYY-MM-DDTHH:mm" in local time. */
@@ -79,7 +80,10 @@ export default function Planner(p: Props) {
     const t = setTimeout(() => {
       getWeather(lat, lng, daysNeeded)
         .then((w) => alive && setWeather(w))
-        .catch((e) => alive && setWeatherError((e as Error).message || "erreur réseau"));
+        .catch((e) => {
+          reportError(e, "météo", "warn");
+          if (alive) setWeatherError((e as Error).message || "erreur réseau");
+        });
     }, 400);
     return () => {
       alive = false;
@@ -348,8 +352,8 @@ export default function Planner(p: Props) {
 }
 
 function formatSplit(s: number) {
-  const m = Math.floor(s / 60);
-  const sec = Math.round(s % 60);
+  const total = Math.round(s);
+  const m = Math.floor(total / 60);
   if (m >= 60) return `${Math.floor(m / 60)}h${pad(m % 60)}`;
-  return `${m}:${pad(sec === 60 ? 59 : sec)}`;
+  return `${m}:${pad(total % 60)}`;
 }
