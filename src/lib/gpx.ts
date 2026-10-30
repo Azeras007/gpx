@@ -73,10 +73,15 @@ function points(o: ExportOptions) {
 
 export function buildExport(format: ExportFormat, o: ExportOptions): string {
   if (format === "tcx") return buildTcx(o);
-  // Waypoints are the most reported reason why the Garmin Connect app opens a GPX but cannot save it
-  if (format === "garmin") return buildGpx(o, false, false);
+  // What the Garmin Connect app saves as a course, as in a file that works:
+  // a time on every point (without them the app opens the file but cannot
+  // save it) and no waypoints (often reported to block the save too)
+  if (format === "garmin") return buildGpx({ ...o, duration: o.duration ?? o.plannedDuration ?? estimateTime(o.track) }, false, false);
   return buildGpx(o, format === "gpx-route");
 }
+
+/** Steady 10 km/h, when no estimate is given. */
+const estimateTime = (track: LatLng[]) => (cumulative(track).at(-1) ?? 0) / 2.78;
 
 /** At most `max` characters, cut at a word when possible ("Boucle du Salève" → "Boucle du"). */
 export function shortName(s: string, max: number): string {
@@ -122,7 +127,7 @@ function buildTcx(o: ExportOptions): string {
   const cum = cumulative(track);
   const total = cum[cum.length - 1] || 0;
   // Without an estimate, a steady 10 km/h keeps the times plausible
-  const duration = o.duration ?? o.plannedDuration ?? total / 2.78;
+  const duration = o.duration ?? o.plannedDuration ?? estimateTime(track);
   const start = o.start ?? Date.UTC(2026, 0, 1, 8, 0, 0);
   const at = (d: number) => new Date(start + (total ? (d / total) * duration * 1000 : 0)).toISOString().replace(/\.\d{3}Z$/, "Z");
   const pos = (p: LatLng) => `<Position><LatitudeDegrees>${p[0].toFixed(6)}</LatitudeDegrees><LongitudeDegrees>${p[1].toFixed(6)}</LongitudeDegrees></Position>`;

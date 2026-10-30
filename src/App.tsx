@@ -1766,8 +1766,8 @@ export default function App() {
               {prefs.exportFormat === "garmin" && (
                 <p className="muted small">
                   {isMobile ? "Dans le menu de partage, choisissez Connect" : "Ouvrez le fichier avec l'app Garmin Connect"}, puis le type
-                  d'activité dans « Options de parcours », et enregistrez. Le parcours arrive sur la montre à la synchronisation. Si l'app
-                  refuse de l'enregistrer, utilisez « Garmin web » sur connect.garmin.com.
+                  d'activité dans « Options de parcours », et enregistrez. Le parcours arrive sur la montre à la synchronisation. Les
+                  horaires de passage sont toujours inclus : l'app en a besoin pour enregistrer le parcours.
                 </p>
               )}
               {prefs.exportFormat === "tcx" && (
