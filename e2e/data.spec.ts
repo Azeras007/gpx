@@ -149,6 +149,8 @@ test("exporter pour Garmin : GPX pour l'app, TCX pour le site", async ({ page })
   const gpx = readFileSync((await dl.path())!, "utf8");
   expect(gpx).toContain("<trkpt");
   expect(gpx).not.toContain("<wpt");
+  // A time on every point, without ticking "Inclure les horaires": the Connect app needs them to save the course
+  expect(gpx.match(/<time>/g)!.length).toBe(gpx.match(/<trkpt/g)!.length + 1);
 
   await page.locator(".chips button").filter({ hasText: "Garmin web" }).click();
   await expect(page.getByText("n'ouvre pas les fichiers TCX")).toBeVisible();

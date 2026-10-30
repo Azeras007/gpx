@@ -137,10 +137,22 @@ describe("shortName", () => {
 });
 
 describe("Garmin app GPX", () => {
+  const track: LatLng[] = Array.from({ length: 5 }, (_, i) => destination([45.9, 6.86], i * 100, 0));
   it("is a plain track without waypoints", () => {
-    const track: LatLng[] = Array.from({ length: 5 }, (_, i) => destination([45.9, 6.86], i * 100, 0));
     const xml = buildExport("garmin", { name: "x", activity: "run", track, profile: [], pois: [{ id: "a", lat: track[2][0], lng: track[2][1], type: "water", name: "Eau" }] });
     expect(xml).not.toContain("<wpt");
     expect(parseGpx(xml).points).toHaveLength(5);
+  });
+  it("always has a time on every point, like the files the app saves", () => {
+    const start = Date.UTC(2026, 9, 28, 14, 0);
+    const xml = buildExport("garmin", { name: "x", activity: "run", track, profile: [], pois: [], plannedDuration: 600, start });
+    const times = [...xml.matchAll(/<trkpt[^>]*>.*?<time>([^<]+)<\/time><\/trkpt>/g)].map((m) => Date.parse(m[1]));
+    expect(times).toHaveLength(5);
+    expect(times[0]).toBe(start);
+    expect(times[4]).toBe(start + 600_000);
+    // Even without any estimate
+    const bare = buildExport("garmin", { name: "x", activity: "run", track, profile: [], pois: [] });
+    expect(bare.match(/<trkpt/g)).toHaveLength(5);
+    expect(bare.match(/<time>/g)).toHaveLength(6); // metadata + 5 points
   });
 });
