@@ -75,3 +75,63 @@ describe("slugify", () => {
     expect(slugify("???")).toBe("trace");
   });
 });
+
+describe("Garmin course (TCX)", () => {
+  const long = Array.from({ length: 30 }, (_, i) => destination([45.9, 6.86], i * 100, 70));
+  const dup: LatLng[] = [long[0], long[0], ...long.slice(1), long.at(-1)!];
+  const prof = long.map((p, i) => ({ lat: p[0], lng: p[1], d: i * 100, ele: 900 + i * 5 }));
+  const xml = buildExport("tcx", {
+    name: "Tour du lac d'Annecy & co",
+    activity: "run",
+    track: dup,
+    profile: prof,
+    plannedDuration: 1800,
+    pois: [
+      { id: "a", lat: long[10][0], lng: long[10][1], type: "water", name: "Point d'eau" },
+      { id: "b", lat: long[20][0], lng: long[20][1], type: "summit", name: "Pointe de la Tournette" },
+      { id: "c", lat: 46.5, lng: 7.2, type: "view", name: "Très loin" },
+    ],
+  });
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const all = (sel: string) => Array.from(doc.getElementsByTagName(sel));
+  it("is well formed with Garmin's limits on names", () => {
+    expect(doc.querySelector("parsererror")).toBeNull();
+    expect(all("Name")[0].textContent).toBe("Tour du lac");
+    expect(all("Notes")[0].textContent).toBe("Tour du lac d'Annecy & co");
+    for (const n of all("CoursePoint")) expect(n.getElementsByTagName("Name")[0].textContent!.length).toBeLessThanOrEqual(10);
+  });
+  it("has one point per place, increasing distances and times", () => {
+    const tp = all("Trackpoint");
+    expect(tp).toHaveLength(30);
+    const d = tp.map((t) => Number(t.getElementsByTagName("DistanceMeters")[0].textContent));
+    const t = tp.map((x) => Date.parse(x.getElementsByTagName("Time")[0].textContent!));
+    for (let i = 1; i < tp.length; i++) {
+      expect(d[i]).toBeGreaterThan(d[i - 1]);
+      expect(t[i]).toBeGreaterThan(t[i - 1]);
+    }
+    expect(t.at(-1)! - t[0]).toBe(1800_000);
+    expect(Number(all("DistanceMeters")[0].textContent)).toBeCloseTo(2900, 0);
+  });
+  it("keeps the waypoints along the route, with Garmin types", () => {
+    const cp = all("CoursePoint").map((c) => [c.getElementsByTagName("Name")[0].textContent, c.getElementsByTagName("PointType")[0].textContent]);
+    expect(cp).toEqual([
+      ["Eau", "Water"],
+      ["Pointe de", "Summit"],
+    ]);
+  });
+  it("the GPX drops repeated points and far waypoints too", () => {
+    const g = buildExport("gpx", { name: "x", activity: "run", track: dup, profile: prof, pois: [{ id: "c", lat: 46.5, lng: 7.2, type: "view", name: "Loin" }] });
+    expect(g.match(/<trkpt/g)).toHaveLength(30);
+    expect(g).not.toContain("<wpt");
+  });
+});
+
+describe("shortName", () => {
+  it("cuts at a word when it can", async () => {
+    const { shortName } = await import("../src/lib/gpx");
+    expect(shortName("Boucle d'été & co du Ventoux", 15)).toBe("Boucle d'été");
+    expect(shortName("Court", 15)).toBe("Court");
+    expect(shortName("Anticonstitutionnellement", 10)).toBe("Anticonsti");
+    expect(shortName("   ", 10)).toBe("Parcours");
+  });
+});

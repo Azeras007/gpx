@@ -925,10 +925,16 @@ export default function App() {
       profile,
       pois,
       duration: withTimes && plan.isPro ? duration : undefined,
+      plannedDuration: duration,
       start: prefs.start ? new Date(prefs.start).getTime() : undefined,
     });
     downloadFile(`${slugify(name)}.${fmt.ext}`, content, fmt.mime);
-    toast(`Fichier ${fmt.label} téléchargé`, "success");
+    toast(
+      prefs.exportFormat === "tcx"
+        ? "Parcours Garmin téléchargé : ouvrez-le avec Garmin Connect, choisissez le type d'activité puis enregistrez"
+        : `Fichier ${fmt.label} téléchargé`,
+      "success",
+    );
   };
 
   const importGpx = async (file: File) => {
@@ -1717,7 +1723,7 @@ export default function App() {
 
             <div className="block">
               <div className="chips">
-                <span>Format GPX</span>
+                <span>Format</span>
                 {(Object.keys(EXPORT_FORMATS) as ExportFormat[]).map((f) => (
                   <button
                     key={f}
@@ -1730,8 +1736,14 @@ export default function App() {
                 ))}
               </div>
               <button className="primary" onClick={exportRoute} disabled={track.length < 2}>
-                <Download size={18} /> Exporter le GPX
+                <Download size={18} /> {prefs.exportFormat === "tcx" ? "Exporter pour Garmin" : "Exporter le GPX"}
               </button>
+              {prefs.exportFormat === "tcx" && (
+                <p className="muted small">
+                  Dans Garmin Connect : ouvrez le fichier, choisissez le type d'activité dans « Options de parcours », puis enregistrez. Le
+                  parcours part ensuite sur la montre à la synchronisation.
+                </p>
+              )}
               <label className="check">
                 <input
                   type="checkbox"

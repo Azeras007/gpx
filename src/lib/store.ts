@@ -182,7 +182,7 @@ export const loadPrefs = (): Prefs => {
   const v = p.view;
   if (v && !(finite(v.lat) && finite(v.lng) && finite(v.zoom) && Math.abs(v.lat) <= 85)) p.view = null;
   // KML and GeoJSON exports were removed: fall back to GPX for older saved prefs.
-  if (p.exportFormat !== "gpx" && p.exportFormat !== "gpx-route") p.exportFormat = "gpx";
+  if (p.exportFormat !== "gpx" && p.exportFormat !== "gpx-route" && p.exportFormat !== "tcx") p.exportFormat = "gpx";
   return p;
 };
 export const savePrefs = (p: Prefs) => write(PREFS_KEY, p);
