@@ -135,3 +135,12 @@ describe("shortName", () => {
     expect(shortName("   ", 10)).toBe("Parcours");
   });
 });
+
+describe("Garmin app GPX", () => {
+  it("is a plain track without waypoints", () => {
+    const track: LatLng[] = Array.from({ length: 5 }, (_, i) => destination([45.9, 6.86], i * 100, 0));
+    const xml = buildExport("garmin", { name: "x", activity: "run", track, profile: [], pois: [{ id: "a", lat: track[2][0], lng: track[2][1], type: "water", name: "Eau" }] });
+    expect(xml).not.toContain("<wpt");
+    expect(parseGpx(xml).points).toHaveLength(5);
+  });
+});

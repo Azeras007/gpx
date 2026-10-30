@@ -93,3 +93,23 @@ test("mobile : avis utilisateur", async ({ page, fakes }) => {
   await expect(page.getByText("Merci, c'est bien reçu")).toBeVisible();
   expect(fakes.reports.at(-1)).toMatchObject({ kind: "feedback", message: "Très pratique sur le terrain" });
 });
+
+test("mobile : le fichier Garmin part dans le menu de partage", async ({ page }) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as { shared: { name: string; type: string; text: string }[] };
+    w.shared = [];
+    navigator.canShare = () => true;
+    navigator.share = async (data?: ShareData) => {
+      for (const f of data?.files ?? []) w.shared.push({ name: f.name, type: f.type, text: await f.text() });
+    };
+  });
+  await openWithRoute(page, undefined, { exportFormat: "garmin" });
+  await page.locator(".sheet-top").tap();
+  await expect(page.getByRole("button", { name: "Envoyer vers Garmin Connect" })).toBeVisible();
+  await page.getByRole("button", { name: "Envoyer vers Garmin Connect" }).click();
+  const shared = await page.evaluate(() => (window as unknown as { shared: { name: string; type: string; text: string }[] }).shared);
+  expect(shared).toHaveLength(1);
+  expect(shared[0].name).toBe("parcours-test.gpx");
+  expect(shared[0].type).toBe("application/gpx+xml");
+  expect(shared[0].text).toContain("<trkpt");
+});
