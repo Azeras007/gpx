@@ -134,3 +134,20 @@ test("image de partage", async ({ page }) => {
   expect(buf.subarray(1, 4).toString()).toBe("PNG");
   expect(buf.length).toBeGreaterThan(20000);
 });
+
+test("exporter pour Garmin (TCX)", async ({ page }) => {
+  await openWithRoute(page);
+  await page.locator(".chips button").filter({ hasText: "Garmin" }).click();
+  await expect(page.getByRole("button", { name: "Exporter pour Garmin" })).toBeVisible();
+  await expect(page.getByText("Options de parcours")).toBeVisible();
+  const [dl] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Exporter pour Garmin" }).click()]);
+  expect(dl.suggestedFilename()).toBe("parcours-test.tcx");
+  const xml = readFileSync((await dl.path())!, "utf8");
+  expect(xml).toContain("<TrainingCenterDatabase");
+  expect(xml).toContain("<Name>Parcours test</Name>");
+  expect(xml.match(/<Trackpoint>/g)!.length).toBeGreaterThanOrEqual(4);
+  expect(xml).toMatch(/<DistanceMeters>2\d{3}\.\d<\/DistanceMeters>/);
+  // The choice is remembered
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Exporter pour Garmin" })).toBeVisible();
+});

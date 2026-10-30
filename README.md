@@ -23,7 +23,7 @@ Dashboard moderne pour **tracer, analyser et exporter des traces GPX** de course
 - 🏷️ Difficulté, calories estimées, raccourcis clavier (touche `?`)
 - 📈 **Profil altimétrique** coloré selon la pente, synchronisé avec la carte au survol
 - 📊 Distance, D+, D-, altitude max, pente max, **durée estimée** (km-effort pour la course, DIN 33466 pour la rando)
-- 💾 **Export GPX** (trace ou itinéraire), avec altitudes, repères et horaires estimés en option
+- 💾 **Export GPX** (trace ou itinéraire) et **Garmin (TCX)**, avec altitudes, repères et horaires estimés en option
 - 🔗 **Lien de partage** : tout le parcours est encodé dans l'URL
 - 📂 **Import GPX** (trk, rte ou wpt) et bibliothèque de parcours enregistrés dans le navigateur
 - 🔎 Recherche de lieux, géolocalisation, interface responsive (bottom sheet sur mobile)
