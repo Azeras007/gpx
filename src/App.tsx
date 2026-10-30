@@ -928,13 +928,31 @@ export default function App() {
       plannedDuration: duration,
       start: prefs.start ? new Date(prefs.start).getTime() : undefined,
     });
-    downloadFile(`${slugify(name)}.${fmt.ext}`, content, fmt.mime);
+    const filename = `${slugify(name)}.${fmt.ext}`;
+    // On a phone, the share sheet lists Garmin Connect (or the watch's app) directly
+    if (isMobile && prefs.exportFormat !== "tcx" && shareFile(filename, content, fmt.mime)) return;
+    downloadFile(filename, content, fmt.mime);
     toast(
-      prefs.exportFormat === "tcx"
-        ? "Parcours Garmin téléchargé : ouvrez-le avec Garmin Connect, choisissez le type d'activité puis enregistrez"
-        : `Fichier ${fmt.label} téléchargé`,
+      prefs.exportFormat === "garmin"
+        ? "Fichier téléchargé : ouvrez-le avec Garmin Connect, choisissez le type d'activité puis enregistrez"
+        : prefs.exportFormat === "tcx"
+          ? "Fichier TCX téléchargé : importez-le sur connect.garmin.com (Entraînement › Parcours › Importer)"
+          : `Fichier ${fmt.label} téléchargé`,
       "success",
     );
+  };
+
+  /** Opens the phone's share sheet with the file; false when the browser cannot. */
+  const shareFile = (filename: string, content: string, mime: string) => {
+    const file = new File([content], filename, { type: mime });
+    if (!navigator.canShare?.({ files: [file] })) return false;
+    navigator.share({ files: [file], title: name }).catch((e) => {
+      if ((e as Error).name === "AbortError") return;
+      // Sharing refused (old browser, permissions): fall back to a download
+      downloadFile(filename, content, mime);
+      toast("Fichier téléchargé", "success");
+    });
+    return true;
   };
 
   const importGpx = async (file: File) => {
@@ -1736,12 +1754,26 @@ export default function App() {
                 ))}
               </div>
               <button className="primary" onClick={exportRoute} disabled={track.length < 2}>
-                <Download size={18} /> {prefs.exportFormat === "tcx" ? "Exporter pour Garmin" : "Exporter le GPX"}
+                <Download size={18} />{" "}
+                {prefs.exportFormat === "garmin"
+                  ? isMobile
+                    ? "Envoyer vers Garmin Connect"
+                    : "Exporter pour Garmin"
+                  : prefs.exportFormat === "tcx"
+                    ? "Exporter pour Garmin Connect web"
+                    : "Exporter le GPX"}
               </button>
+              {prefs.exportFormat === "garmin" && (
+                <p className="muted small">
+                  {isMobile ? "Dans le menu de partage, choisissez Connect" : "Ouvrez le fichier avec l'app Garmin Connect"}, puis le type
+                  d'activité dans « Options de parcours », et enregistrez. Le parcours arrive sur la montre à la synchronisation. Si l'app
+                  refuse de l'enregistrer, utilisez « Garmin web » sur connect.garmin.com.
+                </p>
+              )}
               {prefs.exportFormat === "tcx" && (
                 <p className="muted small">
-                  Dans Garmin Connect : ouvrez le fichier, choisissez le type d'activité dans « Options de parcours », puis enregistrez. Le
-                  parcours part ensuite sur la montre à la synchronisation.
+                  L'app Garmin Connect n'ouvre pas les fichiers TCX : importez-le sur connect.garmin.com (Entraînement › Parcours ›
+                  Importer), depuis un ordinateur ou le navigateur du téléphone.
                 </p>
               )}
               <label className="check">

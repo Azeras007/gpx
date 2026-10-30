@@ -3,15 +3,21 @@ import { cumulative, eleAt, haversine, locateOnTrack, POI_TYPES, type Activity, 
 const esc = (s: string) =>
   s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" })[c]!);
 
-export type ExportFormat = "gpx" | "tcx" | "gpx-route";
+export type ExportFormat = "gpx" | "garmin" | "tcx" | "gpx-route";
 
 export const EXPORT_FORMATS: Record<ExportFormat, { label: string; ext: string; mime: string; hint: string }> = {
   gpx: { label: "Trace", ext: "gpx", mime: "application/gpx+xml", hint: "Pour les montres : Coros, Suunto, Polar, Strava, Garmin" },
-  tcx: {
+  garmin: {
     label: "Garmin",
+    ext: "gpx",
+    mime: "application/gpx+xml",
+    hint: "Pour l'app Garmin Connect (iPhone, Android) : trace sans repères, que l'app enregistre comme parcours",
+  },
+  tcx: {
+    label: "Garmin web",
     ext: "tcx",
     mime: "application/vnd.garmin.tcx+xml",
-    hint: "Format de parcours de Garmin : distance exacte, s'importe et s'enregistre dans Garmin Connect",
+    hint: "Pour connect.garmin.com sur ordinateur (Entraînement › Parcours › Importer) : distance exacte et repères",
   },
   "gpx-route": { label: "Itinéraire", ext: "gpx", mime: "application/gpx+xml", hint: "Pour les GPS de randonnée qui suivent un itinéraire (rte)" },
 };
@@ -67,6 +73,8 @@ function points(o: ExportOptions) {
 
 export function buildExport(format: ExportFormat, o: ExportOptions): string {
   if (format === "tcx") return buildTcx(o);
+  // Waypoints are the most reported reason why the Garmin Connect app opens a GPX but cannot save it
+  if (format === "garmin") return buildGpx(o, false, false);
   return buildGpx(o, format === "gpx-route");
 }
 
@@ -158,7 +166,7 @@ ${o.name.trim().length > 15 ? `      <Notes>${esc(o.name.trim())}</Notes>\n` : "
 `;
 }
 
-function buildGpx(o: ExportOptions, asRoute: boolean): string {
+function buildGpx(o: ExportOptions, asRoute: boolean, withWaypoints = true): string {
   const tag = asRoute ? "rtept" : "trkpt";
   const pts = points(o)
     .map(
@@ -170,7 +178,7 @@ function buildGpx(o: ExportOptions, asRoute: boolean): string {
     )
     .join("\n");
   // A hiking GPS may want a parking or a hut a little off the way: 1 km
-  const wpts = poisAlong(o.track, o.pois, 1000)
+  const wpts = poisAlong(o.track, withWaypoints ? o.pois : [], 1000)
     .map(
       (w) =>
         `  <wpt lat="${w.lat.toFixed(6)}" lon="${w.lng.toFixed(6)}">\n    <name>${esc(w.name)}</name>\n` +

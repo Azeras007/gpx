@@ -135,19 +135,31 @@ test("image de partage", async ({ page }) => {
   expect(buf.length).toBeGreaterThan(20000);
 });
 
-test("exporter pour Garmin (TCX)", async ({ page }) => {
+test("exporter pour Garmin : GPX pour l'app, TCX pour le site", async ({ page }) => {
   await openWithRoute(page);
-  await page.locator(".chips button").filter({ hasText: "Garmin" }).click();
-  await expect(page.getByRole("button", { name: "Exporter pour Garmin" })).toBeVisible();
+  // A waypoint on the route: kept in the plain GPX, left out of the Garmin app file
+  await page.locator(".poi-picker button[title=\"Point d'eau\"]").click();
+  const mid = (await page.locator(".wp-mid").first().boundingBox())!;
+  await page.mouse.click(mid.x + mid.width / 2 + 25, mid.y + mid.height / 2);
+  await expect.poll(async () => (await draft(page)).pois.length).toBe(1);
+  await page.locator(".chips button").filter({ hasText: /^Garmin$/ }).click();
   await expect(page.getByText("Options de parcours")).toBeVisible();
   const [dl] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Exporter pour Garmin" }).click()]);
-  expect(dl.suggestedFilename()).toBe("parcours-test.tcx");
-  const xml = readFileSync((await dl.path())!, "utf8");
+  expect(dl.suggestedFilename()).toBe("parcours-test.gpx");
+  const gpx = readFileSync((await dl.path())!, "utf8");
+  expect(gpx).toContain("<trkpt");
+  expect(gpx).not.toContain("<wpt");
+
+  await page.locator(".chips button").filter({ hasText: "Garmin web" }).click();
+  await expect(page.getByText("n'ouvre pas les fichiers TCX")).toBeVisible();
+  const [dl2] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Exporter pour Garmin Connect web" }).click()]);
+  expect(dl2.suggestedFilename()).toBe("parcours-test.tcx");
+  const xml = readFileSync((await dl2.path())!, "utf8");
   expect(xml).toContain("<TrainingCenterDatabase");
   expect(xml).toContain("<Name>Parcours test</Name>");
-  expect(xml.match(/<Trackpoint>/g)!.length).toBeGreaterThanOrEqual(4);
   expect(xml).toMatch(/<DistanceMeters>2\d{3}\.\d<\/DistanceMeters>/);
+  expect(xml).toContain("<PointType>Water</PointType>");
   // The choice is remembered
   await page.reload();
-  await expect(page.getByRole("button", { name: "Exporter pour Garmin" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Exporter pour Garmin Connect web" })).toBeVisible();
 });
