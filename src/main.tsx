@@ -4,9 +4,9 @@ import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { installErrorReporting } from "./lib/report";
 import { registerServiceWorker } from "./lib/offline";
-import "@fontsource-variable/fraunces/opsz.css";
-import "@fontsource-variable/fraunces/opsz-italic.css";
 import "@fontsource-variable/instrument-sans/index.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
 import "./styles.css";
 
 installErrorReporting();

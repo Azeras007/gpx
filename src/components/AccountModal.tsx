@@ -60,10 +60,10 @@ export default function AccountModal({ account, plan, reason, onUpgrade, onClose
               {reason && <p className="reason">{reason}</p>}
               <ul className="perks">
                 <li>
-                  <CloudUpload size={15} /> Vos parcours sauvegardés et retrouvés sur tous vos appareils
+                  <CloudUpload size={16} /> Vos parcours sauvegardés et retrouvés sur tous vos appareils
                 </li>
                 <li>
-                  <Settings size={15} /> Essai Pro de {TRIAL_DAYS} jours, puis abonnement si vous le souhaitez
+                  <Settings size={16} /> Essai Pro de {TRIAL_DAYS} jours, puis abonnement si vous le souhaitez
                 </li>
               </ul>
               {googleEnabled && (
@@ -84,7 +84,7 @@ export default function AccountModal({ account, plan, reason, onUpgrade, onClose
                 onChange={(e) => setEmail(e.target.value)}
               />
               <button className="primary" type="submit" disabled={busy}>
-                {busy ? <span className="spinner" /> : <Mail size={17} />} Recevoir un lien de connexion
+                {busy ? <span className="spinner" /> : <Mail size={18} />} Recevoir un lien de connexion
               </button>
               <p className="muted small center">Pas de mot de passe : un lien sécurisé arrive par e-mail.</p>
             </form>
@@ -144,7 +144,7 @@ export default function AccountModal({ account, plan, reason, onUpgrade, onClose
                 if (await run(account.deleteAccount)) onClose();
               }}
             >
-              <Trash2 size={13} /> Supprimer mon compte
+              <Trash2 size={16} /> Supprimer mon compte
             </button>
           </>
         )}

@@ -135,7 +135,7 @@ export function usePlan(user: User | null) {
   /** Redirects to Stripe Checkout (or to the billing portal if already subscribed). */
   const checkout = useCallback(
     async (period: "monthly" | "yearly"): Promise<CheckoutResult> => {
-      if (!supabase) return { ok: false, message: "Le paiement en ligne ouvre très bientôt. Merci de votre patience !" };
+      if (!supabase) return { ok: false, message: "Le paiement en ligne n'est pas encore ouvert" };
       if (!user) return { ok: false, needAccount: true };
       const { data, error } = await supabase.functions.invoke("create-checkout", { body: { period } });
       if (error || !data?.url) return { ok: false, message: error ? await functionError(error) : "Paiement indisponible." };
