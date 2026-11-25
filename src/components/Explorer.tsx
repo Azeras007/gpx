@@ -407,15 +407,15 @@ export default function Explorer(p: Props) {
     <div className="block explorer">
       <div className="segmented">
         <button className={source === "community" ? "active" : ""} onClick={() => switchSource("community")}>
-          <UsersRound size={15} /> Communauté
+          <UsersRound size={16} /> Communauté
         </button>
         <button className={source === "waymarked" ? "active" : ""} onClick={() => switchSource("waymarked")}>
-          <Signpost size={15} /> Sentiers balisés
+          <Signpost size={16} /> Sentiers balisés
         </button>
       </div>
       <div className="row">
         <button className="primary" onClick={searchNearMe} disabled={loading}>
-          {loading ? <Loader2 size={17} className="spin" /> : <LocateFixed size={17} />}
+          {loading ? <Loader2 size={18} className="spin" /> : <LocateFixed size={18} />}
           Autour de moi
         </button>
         <button className="secondary" onClick={searchHere} disabled={loading || !p.map}>
@@ -424,7 +424,7 @@ export default function Explorer(p: Props) {
       </div>
       {status && (
         <div className="search-status">
-          <Loader2 size={15} className="spin" /> {status}
+          <Loader2 size={16} className="spin" /> {status}
           <button className="link" onClick={cancel}>
             Annuler
           </button>
@@ -470,13 +470,13 @@ export default function Explorer(p: Props) {
                       {st ? (
                         <span className="tour-stats">
                           <span>
-                            <Clock size={12} /> {formatDuration(st.duration)}
+                            <Clock size={16} /> {formatDuration(st.duration)}
                           </span>
                           <span>
-                            <MoveHorizontal size={12} /> {formatDistance(st.distance)}
+                            <MoveHorizontal size={16} /> {formatDistance(st.distance)}
                           </span>
                           <span>
-                            <TrendingUp size={12} /> {Math.round(st.gain)} m
+                            <TrendingUp size={16} /> {Math.round(st.gain)} m
                           </span>
                         </span>
                       ) : (
@@ -492,7 +492,7 @@ export default function Explorer(p: Props) {
                         {st && <span className={`level level-${st.level.level}`}>{st.level.label}</span>}
                         {t.loop && (
                           <span>
-                            <Repeat size={11} /> boucle
+                            <Repeat size={16} /> boucle
                           </span>
                         )}
                         {isLong(t) && st && <span>{source === "community" ? "partie de la sortie" : "section de l'itinéraire"}</span>}
@@ -505,7 +505,7 @@ export default function Explorer(p: Props) {
                       {t.description && <p>{t.description}</p>}
                       {t.link && (
                         <a className="link" href={t.link} target="_blank" rel="noreferrer">
-                          <ExternalLink size={13} /> Voir la trace sur OpenStreetMap
+                          <ExternalLink size={16} /> Voir la trace sur OpenStreetMap
                         </a>
                       )}
                     </div>

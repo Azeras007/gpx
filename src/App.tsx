@@ -13,7 +13,6 @@ import {
   Navigation,
   Footprints,
   FolderOpen,
-  Gauge,
   HelpCircle,
   ImageDown,
   Layers,
@@ -34,7 +33,6 @@ import {
   Spline,
   Square,
   Trash2,
-  TrendingDown,
   TrendingUp,
   Undo2,
   Upload,
@@ -229,7 +227,7 @@ export default function App() {
   const plan = usePlan(account.user);
   const wasPaid = useRef(plan.paid);
   useEffect(() => {
-    if (plan.paid && !wasPaid.current) toast("Bienvenue dans GPX Studio Pro, merci !", "success");
+    if (plan.paid && !wasPaid.current) toast("Abonnement Pro activé", "success");
     wasPaid.current = plan.paid;
   }, [plan.paid, toast]);
 
@@ -726,7 +724,7 @@ export default function App() {
     if (!arrived.current && distance > 0 && live.d > distance - 40 && !liveOff) {
       arrived.current = true;
       navigator.vibrate?.(400);
-      toast("Arrivée ! Bravo 🎉", "success");
+      toast("Arrivée : parcours terminé", "success");
     }
   }, [live, liveOff, distance, toast]);
 
@@ -1292,7 +1290,7 @@ export default function App() {
                 </button>
               ) : (
                 <button className="replay-btn" onClick={startReplay} disabled={track.length < 2} title="Survoler le parcours">
-                  <Play size={13} /> {replay ? (replay.d >= distance - 1 ? "Rejouer" : "Reprendre") : "Survol"}
+                  <Play size={16} /> {replay ? (replay.d >= distance - 1 ? "Rejouer" : "Reprendre") : "Survol"}
                 </button>
               )}
               {replay && (
@@ -1301,7 +1299,7 @@ export default function App() {
                     {replaySpeed}×
                   </button>
                   <button className="icon-btn ghost" title="Arrêter le survol" onClick={stopReplay}>
-                    <Square size={13} />
+                    <Square size={16} />
                   </button>
                 </>
               )}
@@ -1426,27 +1424,19 @@ export default function App() {
             <div className="summary">
               <div>
                 <b>{formatDuration(duration)}</b>
-                <small>
-                  <Clock size={11} /> durée
-                </small>
+                <small>durée</small>
               </div>
               <div>
                 <b>{formatDistance(distance)}</b>
-                <small>
-                  <MoveHorizontal size={11} /> distance
-                </small>
+                <small>distance</small>
               </div>
               <div>
                 <b>{Math.round(stats.gain)} m</b>
-                <small>
-                  <TrendingUp size={11} /> montée
-                </small>
+                <small>montée</small>
               </div>
               <div>
                 <b>{Math.round(stats.loss)} m</b>
-                <small>
-                  <TrendingDown size={11} /> descente
-                </small>
+                <small>descente</small>
               </div>
             </div>
           </div>
@@ -1531,7 +1521,7 @@ export default function App() {
           </div>
           <div className="hero-side">
             <span className="label">
-              <Clock size={12} /> Durée estimée
+              <Clock size={16} /> Durée estimée
             </span>
             <div className="mid">{formatDuration(duration)}</div>
             {paceLabel && distance > 0 && <span className="sub">allure moy. {paceLabel}</span>}
@@ -1540,16 +1530,16 @@ export default function App() {
 
         <nav className="tabs">
           <button className={tab === "trace" ? "active" : ""} onClick={() => switchTab("trace")}>
-            <PenLine size={15} /> Tracer
+            <PenLine size={16} /> Tracer
           </button>
           <button className={tab === "explore" ? "active" : ""} onClick={() => switchTab("explore")}>
-            <Compass size={15} /> Explorer
+            <Compass size={16} /> Explorer
           </button>
           <button className={tab === "plan" ? "active" : ""} onClick={() => switchTab("plan")}>
-            <CalendarClock size={15} /> Planifier
+            <CalendarClock size={16} /> Planifier
           </button>
           <button className={tab === "library" ? "active" : ""} onClick={() => switchTab("library")}>
-            <FolderOpen size={15} /> Parcours
+            <FolderOpen size={16} /> Parcours
             {library.length > 0 && <i>{library.length}</i>}
           </button>
         </nav>
@@ -1557,17 +1547,11 @@ export default function App() {
         {tab === "trace" && (
           <>
             <div className="stats">
-              <Stat icon={<TrendingUp size={14} />} label="D+" value={`${Math.round(stats.gain)} m`} tone="up" loading={eleLoading} />
-              <Stat icon={<TrendingDown size={14} />} label="D-" value={`${Math.round(stats.loss)} m`} tone="down" loading={eleLoading} />
+              <Stat label="Montée" value={`${Math.round(stats.gain)} m`} tone="up" loading={eleLoading} />
+              <Stat label="Descente" value={`${Math.round(stats.loss)} m`} tone="down" loading={eleLoading} />
+              <Stat label="Pente moyenne" value={formatGrade(stats.climbGrade)} sub={`en montée · ${formatDegrees(stats.climbGrade)}`} />
               <Stat
-                icon={<Mountain size={14} />}
-                label="Pente moy."
-                value={formatGrade(stats.climbGrade)}
-                sub={`en montée · ${formatDegrees(stats.climbGrade)}`}
-              />
-              <Stat
-                icon={<Gauge size={14} />}
-                label="Plus raide"
+                label="Passage le plus raide"
                 value={`${stats.steepest.grade < 0 ? "−" : ""}${formatGrade(stats.steepest.grade)}`}
                 sub={`sur ${formatDistance(stats.steepest.over)} · ${formatDegrees(stats.steepest.grade)}`}
               />
@@ -1621,10 +1605,10 @@ export default function App() {
               </div>
               <div className="segmented small">
                 <button className={prefs.mode === "snap" ? "active" : ""} onClick={() => updatePrefs({ mode: "snap" })}>
-                  <Route size={15} /> Suivre les chemins
+                  <Route size={16} /> Suivre les chemins
                 </button>
                 <button className={prefs.mode === "line" ? "active" : ""} onClick={() => updatePrefs({ mode: "line" })}>
-                  <Ruler size={15} /> Ligne droite
+                  <Ruler size={16} /> Ligne droite
                 </button>
               </div>
               {prefs.mode === "snap" && (
@@ -1655,7 +1639,7 @@ export default function App() {
               </button>
               {overlaps.length > 0 && !routing && (
                 <div className="alert warn">
-                  <Repeat size={15} />
+                  <Repeat size={16} />
                   <span>
                     {formatDistance(overlaps.length)} parcourus deux fois, surlignés sur la carte.
                     {!prefs.avoid && (
@@ -1668,12 +1652,12 @@ export default function App() {
               )}
 
               <div className="toolbar">
-                <Tool icon={<Undo2 size={17} />} label="Annuler" onClick={undo} disabled={!canUndo} />
-                <Tool icon={<Redo2 size={17} />} label="Rétablir" onClick={redo} disabled={!canRedo} />
-                <Tool icon={<Repeat size={17} />} label="Boucler" onClick={closeLoop} disabled={waypoints.length < 2} />
-                <Tool icon={<ArrowLeftRight size={17} />} label="Aller-retour" onClick={outAndBack} disabled={waypoints.length < 2} />
-                <Tool icon={<ArrowUpDown size={17} />} label="Inverser" onClick={reverse} disabled={waypoints.length < 2} />
-                <Tool icon={<Trash2 size={17} />} label="Effacer" onClick={clear} disabled={!waypoints.length && !pois.length} danger />
+                <Tool icon={<Undo2 size={18} />} label="Annuler" onClick={undo} disabled={!canUndo} />
+                <Tool icon={<Redo2 size={18} />} label="Rétablir" onClick={redo} disabled={!canRedo} />
+                <Tool icon={<Repeat size={18} />} label="Boucler" onClick={closeLoop} disabled={waypoints.length < 2} />
+                <Tool icon={<ArrowLeftRight size={18} />} label="Aller-retour" onClick={outAndBack} disabled={waypoints.length < 2} />
+                <Tool icon={<ArrowUpDown size={18} />} label="Inverser" onClick={reverse} disabled={waypoints.length < 2} />
+                <Tool icon={<Trash2 size={18} />} label="Effacer" onClick={clear} disabled={!waypoints.length && !pois.length} danger />
               </div>
             </div>
 
@@ -1694,13 +1678,13 @@ export default function App() {
                     title={POI_TYPES[t].label}
                     onClick={() => setPlacing((cur) => (cur === t ? null : t))}
                   >
-                    <PoiIcon type={t} size={17} />
+                    <PoiIcon type={t} size={18} />
                   </button>
                 ))}
               </div>
               <button className="secondary osm-btn" onClick={findOsmPois} disabled={osmLoading || track.length < 2}>
                 {osmLoading ? <span className="spinner" /> : <Compass size={16} />}
-                Trouver eau, refuges & sommets sur le parcours
+                Trouver eau, refuges et sommets
                 {!plan.isPro && <span className="pro-pill">PRO</span>}
               </button>
               {osmPois.length > 0 && (
@@ -1716,7 +1700,7 @@ export default function App() {
             <div className="block loop-card">
               <div className="block-head">
                 <span>
-                  <Sparkles size={14} /> Boucle automatique
+                  <Sparkles size={16} /> Boucle automatique
                 </span>
                 <b>{loopKm} km</b>
               </div>
@@ -1734,7 +1718,7 @@ export default function App() {
                 {!plan.isPro && <span className="pro-pill">PRO</span>}
               </button>
               <button className="link loop-here" disabled={loop != null} onClick={loopFromHere}>
-                <LocateFixed size={13} /> Depuis ma position
+                <LocateFixed size={16} /> Depuis ma position
               </button>
               <p className="muted small">Depuis votre point de départ (ou le centre de la carte), sans repasser par les mêmes chemins.</p>
             </div>
@@ -1914,7 +1898,7 @@ export default function App() {
                 {library.map((r) => (
                   <li key={r.id} className={r.id === currentId ? "current" : ""} onClick={() => openRoute(r)}>
                     <span className={`badge ${r.activity}`}>
-                      {r.activity === "run" ? <Footprints size={14} /> : <Mountain size={14} />}
+                      {r.activity === "run" ? <Footprints size={16} /> : <Mountain size={16} />}
                     </span>
                     <div>
                       <b>{r.name}</b>
@@ -1931,7 +1915,7 @@ export default function App() {
                         deleteRoute(r.id);
                       }}
                     >
-                      <X size={15} />
+                      <X size={16} />
                     </button>
                   </li>
                 ))}
@@ -2032,13 +2016,13 @@ export default function App() {
           {preview.stats && (
             <div className="tour-card-stats">
               <span>
-                <Clock size={13} /> {formatDuration(preview.stats.duration)}
+                <Clock size={16} /> {formatDuration(preview.stats.duration)}
               </span>
               <span>
-                <MoveHorizontal size={13} /> {formatDistance(preview.stats.distance)}
+                <MoveHorizontal size={16} /> {formatDistance(preview.stats.distance)}
               </span>
               <span>
-                <TrendingUp size={13} /> {Math.round(preview.stats.gain)} m
+                <TrendingUp size={16} /> {Math.round(preview.stats.gain)} m
               </span>
               <span className={`level level-${preview.stats.level.level}`}>{preview.stats.level.label}</span>
             </div>
@@ -2052,27 +2036,27 @@ export default function App() {
       {isMobile && sheet === "peek" && !preview && !replay && !liveOn && (
         <div className="quickbar panel" style={{ bottom: sheetHeights.peek + 12 }}>
           <button onClick={undo} disabled={!canUndo}>
-            <Undo2 size={19} />
+            <Undo2 size={18} />
             <span>Annuler</span>
           </button>
           <button onClick={redo} disabled={!canRedo}>
-            <Redo2 size={19} />
+            <Redo2 size={18} />
             <span>Rétablir</span>
           </button>
           <button onClick={() => updatePrefs({ mode: prefs.mode === "snap" ? "line" : "snap" })}>
-            {prefs.mode === "snap" ? <Route size={19} /> : <Ruler size={19} />}
+            {prefs.mode === "snap" ? <Route size={18} /> : <Ruler size={18} />}
             <span>{prefs.mode === "snap" ? "Chemins" : "Ligne"}</span>
           </button>
           <button onClick={closeLoop} disabled={waypoints.length < 2}>
-            <Repeat size={19} />
+            <Repeat size={18} />
             <span>Boucler</span>
           </button>
           <button onClick={clear} disabled={!waypoints.length}>
-            <Trash2 size={19} />
+            <Trash2 size={18} />
             <span>Effacer</span>
           </button>
           <button className="qb-primary" onClick={exportRoute} disabled={track.length < 2}>
-            <Download size={19} />
+            <Download size={18} />
             <span>GPX</span>
           </button>
         </div>
@@ -2127,7 +2111,7 @@ export default function App() {
               </button>
             ) : (
               <button className="icon-btn ghost" title={replay.d >= distance - 1 ? "Rejouer" : "Reprendre"} onClick={startReplay}>
-                <Play size={15} />
+                <Play size={16} />
               </button>
             )}
             <button className="speed" onClick={() => setReplaySpeed((v) => (v >= 8 ? 1 : v * 2))} title="Vitesse">
@@ -2135,7 +2119,7 @@ export default function App() {
             </button>
             {!replay.follow && (
               <button className="speed" onClick={followReplay} title="Recentrer la carte sur le point">
-                <LocateFixed size={13} /> Suivre
+                <LocateFixed size={16} /> Suivre
               </button>
             )}
             <button className="icon-btn ghost" title="Arrêter le survol" onClick={stopReplay}>
@@ -2190,7 +2174,7 @@ export default function App() {
                     const n = nextPoi(live.d)!;
                     return (
                       <>
-                        <PoiIcon type={n.type} size={14} /> {n.name} dans {formatDistance(n.d! - live.d)}
+                        <PoiIcon type={n.type} size={16} /> {n.name} dans {formatDistance(n.d! - live.d)}
                       </>
                     );
                   })()}
@@ -2209,7 +2193,7 @@ export default function App() {
                 }}
                 title="Recentrer la carte sur ma position"
               >
-                <LocateFixed size={13} /> Suivre
+                <LocateFixed size={16} /> Suivre
               </button>
             )}
             <button className="icon-btn ghost" title="Arrêter le suivi en direct" onClick={() => setLiveOn(false)}>
@@ -2221,7 +2205,7 @@ export default function App() {
 
       {!online && (
         <div className="offline-banner panel" role="status">
-          <CloudOff size={15} />
+          <CloudOff size={16} />
           <span>Hors ligne : vos parcours et la carte déjà vue restent disponibles. Itinéraires, météo et exploration reviendront avec le réseau.</span>
         </div>
       )}
@@ -2258,7 +2242,7 @@ export default function App() {
             trialUsed={plan.trialUsed}
             onStartTrial={async () => {
               const r = await plan.startTrial();
-              if (r.ok) toast("Essai Pro activé pour 14 jours — profitez-en !", "success");
+              if (r.ok) toast("Essai Pro activé pour 14 jours", "success");
               return r;
             }}
             onCheckout={plan.checkout}
@@ -2290,12 +2274,10 @@ function Loading() {
   );
 }
 
-function Stat(props: { icon: React.ReactNode; label: string; value: string; sub?: string; tone?: "up" | "down" | "warn"; loading?: boolean }) {
+function Stat(props: { label: string; value: string; sub?: string; tone?: "up" | "down" | "warn"; loading?: boolean }) {
   return (
     <div className={`stat ${props.tone ?? ""}`}>
-      <span className="label">
-        {props.icon} {props.label}
-      </span>
+      <span className="label">{props.label}</span>
       <b className={props.loading ? "shimmer" : ""}>{props.value}</b>
       {props.sub && <small className="stat-sub">{props.sub}</small>}
     </div>
@@ -2395,9 +2377,9 @@ function SearchBox({ onPick }: { onPick: (p: Place) => void }) {
 
   return (
     <div className="search panel">
-      <Search size={17} />
+      <Search size={18} />
       <input
-        placeholder="Rechercher un lieu, un sommet…"
+        placeholder="Rechercher un lieu"
         value={q}
         onChange={(e) => setQ(e.target.value)}
         onFocus={() => setOpen(true)}
@@ -2412,7 +2394,7 @@ function SearchBox({ onPick }: { onPick: (p: Place) => void }) {
       />
       {q && (
         <button className="icon-btn ghost" onClick={() => setQ("")}>
-          <X size={15} />
+          <X size={16} />
         </button>
       )}
       {open && results.length > 0 && (

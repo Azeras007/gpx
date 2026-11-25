@@ -1,4 +1,6 @@
 import type { Activity, LatLng, ProfilePoint } from "./geo";
+// The display face only for this poster: loaded with this module, on demand
+import "@fontsource-variable/fraunces/opsz.css";
 
 export interface CardData {
   name: string;
@@ -11,47 +13,41 @@ export interface CardData {
 
 const W = 1080;
 const H = 1350;
-const PAPER = "#f4f0e6";
-const INK = "#1d1c18";
-const INK_3 = "#8b8578";
-const LINE = "#d9d0bd";
+const PAPER = "#f5f4f1";
+const INK = "#1c1a17";
+const INK_3 = "#736e67";
+const LINE = "#dcd9d3";
+const BLAZE = "#c0392b";
 
-/** Renders a shareable "story" card — a page of a field notebook — as a PNG. */
+/** Renders a shareable "story" card as a PNG: the route, its profile and its figures. */
 export async function renderCard(d: CardData): Promise<Blob> {
   // Make sure the web fonts are there before drawing text with them.
   await Promise.all([
     document.fonts?.load('500 72px "Fraunces Variable"'),
-    document.fonts?.load('italic 400 30px "Fraunces Variable"'),
-    document.fonts?.load('600 22px "Instrument Sans Variable"'),
+    document.fonts?.load('500 22px "Instrument Sans Variable"'),
+    document.fonts?.load('400 48px "IBM Plex Mono"'),
   ]).catch(() => {});
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
   const ctx = c.getContext("2d")!;
-  const serif = (w: number, size: number, italic = false) => `${italic ? "italic " : ""}${w} ${size}px "Fraunces Variable", Georgia, serif`;
+  const serif = (w: number, size: number) => `${w} ${size}px "Fraunces Variable", Georgia, serif`;
   const sans = (w: number, size: number) => `${w} ${size}px "Instrument Sans Variable", system-ui, sans-serif`;
+  const mono = (w: number, size: number) => `${w} ${size}px "IBM Plex Mono", ui-monospace, monospace`;
 
   ctx.fillStyle = PAPER;
   ctx.fillRect(0, 0, W, H);
 
-  // Header: waymark + small caps
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(80, 84, 44, 15);
-  ctx.fillStyle = "#c8372d";
-  ctx.fillRect(80, 99, 44, 15);
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 2.5;
-  ctx.strokeRect(80, 84, 44, 30);
+  // Header: the trail blaze and the product name
+  blaze(ctx, 80, 84, 44, 30);
   ctx.fillStyle = INK;
-  ctx.font = sans(600, 22);
-  ctx.letterSpacing = "4px";
-  ctx.fillText("GPX STUDIO", 144, 107);
-  const tag = d.activity === "run" ? "COURSE À PIED" : "RANDONNÉE";
+  ctx.font = sans(500, 26);
+  ctx.fillText("GPX Studio", 144, 108);
+  const tag = d.activity === "run" ? "Course à pied" : "Randonnée";
   ctx.fillStyle = INK_3;
   ctx.textAlign = "right";
-  ctx.fillText(tag, W - 80, 107);
+  ctx.fillText(tag, W - 80, 108);
   ctx.textAlign = "left";
-  ctx.letterSpacing = "0px";
 
   // Title
   ctx.fillStyle = INK;
@@ -96,7 +92,7 @@ export async function renderCard(d: CardData): Promise<Blob> {
     const [sx, sy] = proj(pts[0]);
     const [ex, ey] = proj(pts[pts.length - 1]);
     dot(ctx, ex, ey, 12, INK);
-    dot(ctx, sx, sy, 12, "#2e5a45");
+    blaze(ctx, sx - 18, sy - 13, 36, 26);
   }
 
   // Elevation profile
@@ -122,8 +118,8 @@ export async function renderCard(d: CardData): Promise<Blob> {
     ctx.lineWidth = 3;
     ctx.stroke();
     ctx.fillStyle = INK_3;
-    ctx.font = serif(400, 26, true);
-    ctx.fillText(`point culminant ${Math.round(hi)} m`, pf.x, pf.y - 16);
+    ctx.font = sans(400, 24);
+    ctx.fillText(`Point culminant ${Math.round(hi)} m`, pf.x, pf.y - 16);
   }
 
   // Stats
@@ -136,19 +132,28 @@ export async function renderCard(d: CardData): Promise<Blob> {
   d.stats.forEach((st, i) => {
     const x = 80 + i * colW;
     ctx.fillStyle = INK_3;
-    ctx.font = sans(600, 20);
-    ctx.letterSpacing = "3px";
-    ctx.fillText(st.label.toUpperCase(), x, 1160);
-    ctx.letterSpacing = "0px";
+    ctx.font = sans(400, 24);
+    ctx.fillText(st.label, x, 1160);
     ctx.fillStyle = INK;
-    ctx.font = serif(500, 50);
-    ctx.fillText(st.value, x, 1222);
+    ctx.font = mono(400, 44);
+    ctx.fillText(st.value, x, 1220);
   });
   ctx.fillStyle = INK_3;
-  ctx.font = serif(400, 24, true);
-  ctx.fillText("préparé avec GPX Studio", 80, H - 52);
+  ctx.font = sans(400, 24);
+  ctx.fillText("Préparé avec GPX Studio", 80, H - 52);
 
   return new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(b) : reject(new Error("Image impossible"))), "image/png"));
+}
+
+/** The painted trail blaze, white over red. */
+function blaze(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(x, y, w, h / 2);
+  ctx.fillStyle = BLAZE;
+  ctx.fillRect(x, y + h / 2, w, h / 2);
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 2.5;
+  ctx.strokeRect(x, y, w, h);
 }
 
 function dot(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: string) {

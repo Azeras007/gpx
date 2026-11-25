@@ -38,7 +38,7 @@ export const OSM_ICONS: Record<OsmPoi["kind"], LucideIcon> = {
 
 export function PoiIcon({ type, size = 16 }: { type: PoiType; size?: number }) {
   const Icon = POI_ICONS[type];
-  return <Icon size={size} strokeWidth={1.9} />;
+  return <Icon size={size} strokeWidth={1.5} />;
 }
 
 const markup = new Map<string, string>();
@@ -50,7 +50,7 @@ export function iconMarkup(Icon: LucideIcon, size = 15) {
   if (html == null) {
     const el = document.createElement("div");
     // Preact renders synchronously into a detached element
-    render((<Icon size={size} strokeWidth={2} />) as unknown as Parameters<typeof render>[0], el);
+    render((<Icon size={size} strokeWidth={1.5} />) as unknown as Parameters<typeof render>[0], el);
     html = el.innerHTML;
     render(null, el);
     if (Icon.displayName) markup.set(key, html);

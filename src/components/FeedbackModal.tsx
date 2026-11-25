@@ -100,7 +100,7 @@ export default function FeedbackModal({ routeLink, onClose }: Props) {
                     className={n <= rating ? "on" : ""}
                     onClick={() => setRating(rating === n ? 0 : n)}
                   >
-                    <Star size={20} />
+                    <Star size={18} />
                   </button>
                 ))}
               </div>

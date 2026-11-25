@@ -157,7 +157,7 @@ export default function Planner(p: Props) {
       <div className="block">
         <div className="block-head">
           <span>
-            <Target size={14} /> Objectif de temps
+            <Target size={16} /> Objectif de temps
           </span>
         </div>
         <div className="field-row">
@@ -183,7 +183,7 @@ export default function Planner(p: Props) {
             {p.activity === "run" ? (
               <>
                 Allure sur le plat nécessaire : <b>{formatPace(neededPace!)} /km</b>
-                {neededPace! < 2.5 && " — irréaliste 😅"}
+                {neededPace! < 2.5 && " — irréaliste"}
               </>
             ) : (
               <>
@@ -201,7 +201,7 @@ export default function Planner(p: Props) {
             <span>Météo sur le parcours</span>
             {sun?.sunrise && sun.sunset && (
               <span className="sun">
-                <Sun size={13} /> {clock(sun.sunrise)} · <Sunset size={13} /> {clock(sun.sunset)}
+                <Sun size={16} /> {clock(sun.sunrise)} · <Sunset size={16} /> {clock(sun.sunset)}
               </span>
             )}
           </div>
@@ -215,7 +215,7 @@ export default function Planner(p: Props) {
               <span>
                 Météo indisponible ({weatherError}).
                 <button className="link" onClick={() => setRetry((r) => r + 1)}>
-                  <RotateCw size={12} /> Réessayer
+                  <RotateCw size={16} /> Réessayer
                 </button>
               </span>
             </div>
@@ -235,20 +235,20 @@ export default function Planner(p: Props) {
                     <b>{Math.round(h.temp)}°</b>
                     {h.rain != null ? (
                       <small className={h.rain >= 40 ? "rainy" : ""}>
-                        <Droplets size={10} /> {h.rain}%
+                        <Droplets size={16} /> {h.rain}%
                       </small>
                     ) : (
                       <small className={(h.mm ?? 0) >= 0.5 ? "rainy" : ""}>
-                        <Droplets size={10} /> {(h.mm ?? 0).toFixed(1).replace(".", ",")} mm
+                        <Droplets size={16} /> {(h.mm ?? 0).toFixed(1).replace(".", ",")} mm
                       </small>
                     )}
                     <small>
-                      <Wind size={10} /> {Math.round(h.wind)}
+                      <Wind size={16} /> {Math.round(h.wind)}
                     </small>
                   </div>
                 ))}
               </div>
-              {maxRain >= 50 && <p className="muted small">☔ Pluie probable — prenez une veste imperméable.</p>}
+              {maxRain >= 50 && <p className="muted small">Pluie probable : prévoyez une veste imperméable</p>}
               <p className="muted small source">Prévisions {weather.source}</p>
             </>
           )}
@@ -335,12 +335,12 @@ export default function Planner(p: Props) {
               .map((poi) => (
                 <li key={poi.id}>
                   <button className="poi-emoji" onClick={() => p.onFocusPoi(poi)} title="Centrer la carte">
-                    <PoiIcon type={poi.type} size={14} />
+                    <PoiIcon type={poi.type} size={16} />
                   </button>
                   <input value={poi.name} onChange={(e) => p.onRenamePoi(poi.id, e.target.value)} />
                   <span>{poi.d != null ? `km ${(poi.d / 1000).toFixed(1).replace(".", ",")}` : "hors tracé"}</span>
                   <button className="icon-btn ghost" onClick={() => p.onRemovePoi(poi.id)} title="Supprimer">
-                    <Trash2 size={14} />
+                    <Trash2 size={16} />
                   </button>
                 </li>
               ))}

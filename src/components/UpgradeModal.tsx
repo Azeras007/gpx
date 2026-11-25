@@ -43,7 +43,7 @@ export default function UpgradeModal({ feature, trialUsed, onStartTrial, onCheck
         <ul className="upgrade-list">
           {(Object.keys(PRO_FEATURES) as ProFeature[]).map((k) => (
             <li key={k} className={k === feature ? "on" : ""}>
-              <Check size={15} />
+              <Check size={16} />
               <span>
                 <b>{PRO_FEATURES[k].title}</b>
                 <small>{PRO_FEATURES[k].pitch}</small>
@@ -72,7 +72,7 @@ export default function UpgradeModal({ feature, trialUsed, onStartTrial, onCheck
             disabled={busy}
             onClick={() => act(onStartTrial, "Créez votre compte gratuit pour démarrer l'essai Pro de 14 jours.", true)}
           >
-            <Sparkles size={17} /> Essayer {TRIAL_DAYS} jours gratuitement
+            <Sparkles size={18} /> Essayer {TRIAL_DAYS} jours gratuitement
           </button>
         )}
         <button
